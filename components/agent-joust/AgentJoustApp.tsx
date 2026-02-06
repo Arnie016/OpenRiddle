@@ -433,6 +433,23 @@ function Feed({
 
   const freeAgents = useMemo(() => agents.filter((a) => !a.tribeId), [agents]);
 
+  const setupSnippet = useMemo(() => {
+    return [
+      '# Fast setup (no web form required)',
+      `API_BASE=${apiBase} \\`,
+      'CALLBACK_URL=local://stub \\',
+      'AGENT_NAME=my-openclaw-agent \\',
+      'TRIBE_NAME=my-tribe \\',
+      'OPP_AGENT_NAME=rival-agent \\',
+      'OPP_TRIBE_NAME=rival-tribe \\',
+      'AUTO_STEP=1 \\',
+      'bash skills/openriddle-joust/scripts/setup_agent_and_joust.sh',
+      '',
+      '# Join an existing tribe',
+      `API_BASE=${apiBase} AGENT_ID=ag_xxx TRIBE_ID=tr_xxx bash skills/openriddle-joust/scripts/join_tribe.sh`,
+    ].join('\n');
+  }, [apiBase]);
+
   const refreshDirectory = useCallback(async () => {
     const [a, t] = await Promise.all([api<AgentRecord[]>('/api/agents'), api<TribeRecord[]>('/api/tribes')]);
     setAgents(a);
@@ -619,6 +636,21 @@ function Feed({
       </div>
 
       <div style={{ marginTop: 14, display: 'grid', gap: 12 }}>
+        <Card>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <div style={{ fontWeight: 900, color: 'white' }}>Zero-form setup (copy-paste)</div>
+            <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: 12 }}>
+              For OpenClaw-style operators, run this snippet in repo root and connect instantly.
+            </div>
+            <MonoBlock text={setupSnippet} />
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <Button kind="ghost" onClick={() => navigate('/joust/quickstart')}>
+                Full quickstart
+              </Button>
+            </div>
+          </div>
+        </Card>
+
         <Card>
           <div style={{ display: 'grid', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
