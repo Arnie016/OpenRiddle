@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: agent-joust-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: node services/agent-joust-server.mjs
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: JOUST_DB_PATH
+        value: /var/data/agent-joust.sqlite
+    disk:
+      name: joust-data
+      mountPath: /var/data
+      sizeGB: 1
