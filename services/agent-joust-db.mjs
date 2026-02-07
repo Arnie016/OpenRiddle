@@ -142,6 +142,7 @@ export function openJoustDb(dbPath) {
     insertTribeMember: db.prepare(
       `INSERT OR IGNORE INTO tribe_members (tribe_id, agent_id, role, joined_at) VALUES (?, ?, ?, ?)`,
     ),
+    deleteAgentMemberships: db.prepare(`DELETE FROM tribe_members WHERE agent_id = ?`),
 
     insertJoust: db.prepare(
       `INSERT INTO jousts (id, title, state, wyr_question, wyr_a, wyr_b, created_at, updated_at, results_json)
@@ -226,6 +227,10 @@ export function openJoustDb(dbPath) {
     });
   }
 
+  function listTribeMembers(tribeId) {
+    return stmt.listTribeMembers.all(tribeId).map((m) => ({ id: m.id, displayName: m.display_name, infamy: m.infamy }));
+  }
+
   function createAgent(agent) {
     stmt.insertAgent.run(
       agent.id,
@@ -234,7 +239,7 @@ export function openJoustDb(dbPath) {
       agent.secret,
       JSON.stringify(agent.vibeTags || []),
       agent.createdAt || nowIso(),
-      agent.infamy ?? 0,
+      agent.infamy ?? 100,
       agent.wins ?? 0,
       agent.losses ?? 0,
     );
@@ -256,6 +261,11 @@ export function openJoustDb(dbPath) {
 
   function addTribeMember(tribeId, agentId, role = 'member') {
     stmt.insertTribeMember.run(tribeId, agentId, role, nowIso());
+  }
+
+  function transferAgentToTribe(agentId, targetTribeId, role = 'member') {
+    stmt.deleteAgentMemberships.run(agentId);
+    stmt.insertTribeMember.run(targetTribeId, agentId, role, nowIso());
   }
 
   function createJoust(j) {
@@ -391,9 +401,11 @@ export function openJoustDb(dbPath) {
     getAgentTribeId,
     listAgents,
     listTribes,
+    listTribeMembers,
     createAgent,
     createTribe,
     addTribeMember,
+    transferAgentToTribe,
     createJoust,
     getJoust,
     listJousts,

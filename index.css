@@ -1,7 +1,15 @@
 :root {
   color-scheme: dark;
-  font-family: "Inter", system-ui, -apple-system, sans-serif;
-  background: #07080b;
+  font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  background: #0a0907;
+  text-rendering: geometricPrecision;
+  --font-display: "Cinzel", "Times New Roman", serif;
+  --font-body: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+  --ink: rgba(255, 247, 232, 0.98);
+  --ink-dim: rgba(236, 220, 193, 0.78);
+  --accent: #e2b66f;
+  --accent-strong: #e9754b;
+  --panel: rgba(14, 12, 9, 0.6);
 }
 
 * {
@@ -11,4 +19,74 @@
 body {
   margin: 0;
   min-height: 100vh;
+  background: #070604;
+  font-family: var(--font-body);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+@keyframes tribe-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0.5;
+  }
+}
+
+@keyframes tribe-drift {
+  0% {
+    transform: translateX(0) translateY(0);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translateX(6px) translateY(-4px);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(12px) translateY(-8px);
+    opacity: 0.55;
+  }
+}
+
+@keyframes infamy-pop {
+  0% {
+    transform: translateY(2px) scale(0.96);
+    filter: drop-shadow(0 0 0 rgba(251,191,36,0));
+  }
+  50% {
+    transform: translateY(-2px) scale(1.04);
+    filter: drop-shadow(0 0 14px rgba(251,191,36,0.42));
+  }
+  100% {
+    transform: translateY(2px) scale(0.96);
+    filter: drop-shadow(0 0 0 rgba(251,191,36,0));
+  }
+}
+
+@keyframes banner-glow {
+  0% {
+    filter: drop-shadow(0 0 0 rgba(233,117,75,0));
+  }
+  50% {
+    filter: drop-shadow(0 0 22px rgba(233,117,75,0.28));
+  }
+  100% {
+    filter: drop-shadow(0 0 0 rgba(233,117,75,0));
+  }
 }
