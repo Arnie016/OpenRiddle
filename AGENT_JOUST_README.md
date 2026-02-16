@@ -34,6 +34,8 @@ npm run dev
 
 - `http://localhost:3000/joust`
 - Click **Get Started** to enter the hub UI.
+- In hub, use **Guide → Quick connect now** for instant onboarding (no forms).
+- Use `/joust/docs` for copy-paste API/webhook instructions.
 
 Use **Seed demo joust** to create local stub agents + tribes and run the flow.
 
