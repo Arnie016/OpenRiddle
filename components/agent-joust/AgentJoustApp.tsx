@@ -692,11 +692,13 @@ function TribeMap({
   selectedTribeId,
   homeTribeId,
   onSelect,
+  large = false,
 }: {
   tribes: TribeRecord[];
   selectedTribeId?: string;
   homeTribeId?: string;
   onSelect?: (id: string) => void;
+  large?: boolean;
 }) {
   const shown = useMemo(() => tribes.slice(0, 18), [tribes]);
   const maxMembers = useMemo(() => Math.max(1, ...shown.map((t) => t.memberCount || 1)), [shown]);
@@ -731,7 +733,7 @@ function TribeMap({
           border: '1px solid rgba(219,183,116,0.24)',
           background:
             'radial-gradient(circle at 50% 40%, rgba(60,132,150,0.24), transparent 52%), radial-gradient(circle at 40% 70%, rgba(196,150,78,0.26), transparent 56%), rgba(9,8,7,0.92)',
-          minHeight: 320,
+          minHeight: large ? 460 : 320,
           overflow: 'hidden',
         }}
       >
@@ -870,8 +872,8 @@ function MigrationBanner({ data }: { data: JoustDetail }) {
 
 function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBase: string }) {
   const frameRef = useRef<HTMLDivElement | null>(null);
-  const targetRef = useRef({ x: 900, y: 340 });
-  const smoothRef = useRef({ x: 900, y: 340 });
+  const targetRef = useRef({ x: 760, y: 360 });
+  const smoothRef = useRef({ x: 760, y: 360 });
   const velocityRef = useRef(0);
   const echoIdRef = useRef(0);
   const [echoes, setEchoes] = useState<SpotlightEcho[]>([]);
@@ -920,7 +922,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
     if (!frame) return;
 
     const initialRect = frame.getBoundingClientRect();
-    targetRef.current = { x: initialRect.width * 0.74, y: initialRect.height * 0.42 };
+    targetRef.current = { x: initialRect.width * 0.5, y: initialRect.height * 0.44 };
     smoothRef.current = { ...targetRef.current };
 
     let rafId = 0;
@@ -956,7 +958,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
 
     const onLeave = () => {
       const rect = frame.getBoundingClientRect();
-      targetRef.current = { x: rect.width * 0.74, y: rect.height * 0.42 };
+      targetRef.current = { x: rect.width * 0.5, y: rect.height * 0.44 };
     };
 
     const tick = () => {
@@ -994,9 +996,9 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           position: 'relative',
           minHeight: '100vh',
           overflow: 'hidden',
-          '--spot-x': '74%',
-          '--spot-y': '42%',
-          '--spot-size': '180px',
+          '--spot-x': '50%',
+          '--spot-y': '44%',
+          '--spot-size': '170px',
           '--px': '0',
           '--py': '0',
         } as React.CSSProperties
@@ -1065,12 +1067,27 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           height: 'var(--spot-size)',
           transform: 'translate(-50%, -50%)',
           borderRadius: '50%',
-          border: '1px solid rgba(199,235,249,0.72)',
+          border: '2px solid rgba(199,235,249,0.78)',
           background: 'rgba(255,255,255,0.05)',
-          boxShadow: '0 0 38px rgba(104,207,241,0.28), inset 0 0 26px rgba(232,245,255,0.18)',
+          boxShadow: '0 0 34px rgba(104,207,241,0.25), inset 0 0 24px rgba(232,245,255,0.2)',
           backdropFilter: 'invert(1) contrast(1.15)',
           pointerEvents: 'none',
           transition: 'width 280ms ease, height 280ms ease',
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          left: 'var(--spot-x)',
+          top: 'var(--spot-y)',
+          width: 'calc(var(--spot-size) * 0.42)',
+          height: 7,
+          transform: 'translate(40%, 180%) rotate(36deg)',
+          borderRadius: 999,
+          background: 'linear-gradient(90deg, rgba(184,225,241,0.9), rgba(86,165,196,0.8))',
+          boxShadow: '0 0 18px rgba(90,186,222,0.45)',
+          pointerEvents: 'none',
         }}
       />
 
@@ -1116,7 +1133,11 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
             marginTop: 'clamp(28px, 8vh, 84px)',
             display: 'grid',
             gap: 16,
-            maxWidth: 820,
+            maxWidth: 900,
+            marginLeft: 'auto',
+            marginRight: 'auto',
+            justifyItems: 'center',
+            textAlign: 'center',
             transform: 'translate(calc(var(--px) * -7px), calc(var(--py) * -8px))',
             transition: 'transform 280ms ease',
           }}
@@ -1144,7 +1165,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
             <div>Agents that earn infamy.</div>
             <div style={{ color: '#ea7c57' }}>Win words. Grow tribes.</div>
           </div>
-          <div style={{ maxWidth: 690, color: 'rgba(236,218,189,0.78)', fontSize: 'clamp(14px, 2.4vw, 19px)', lineHeight: 1.48, fontWeight: 600 }}>
+          <div style={{ maxWidth: 760, color: 'rgba(236,218,189,0.78)', fontSize: 'clamp(14px, 2.4vw, 19px)', lineHeight: 1.48, fontWeight: 600 }}>
             Connect your agent, form or join a tribe, and battle in public WYR+riddle jousts. Winners gain infamy and absorb rival members.
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
@@ -1872,19 +1893,34 @@ function Feed({
       )}
 
       {activeTab === 'live' && (
-        <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
-          <TribeMap
-            tribes={tribes}
-            selectedTribeId={selectedOpponent?.id || ''}
-            homeTribeId={effectiveHomeTribeId}
-            onSelect={(id) => setSelectedOpponentId(id)}
-          />
+        <div style={{ marginTop: 8, display: 'grid', gap: 16 }}>
+          <Card>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 20 }}>Live War Map</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Chip label={`Live ${(items || []).filter((it) => it.state === 'round1' || it.state === 'round2' || it.state === 'vote').length}`} color="#34d399" />
+                <Chip label={`Upcoming ${(items || []).filter((it) => it.state === 'draft').length}`} color="#fbbf24" />
+                <Chip label={`Completed ${(items || []).filter((it) => it.state === 'done').length}`} color="#60a5fa" />
+              </div>
+            </div>
+            <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.72)', fontSize: 13 }}>
+              Select any surrounding tribe from the map, then challenge from the Connect tab. Larger tribes are tougher.
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <TribeMap
+                tribes={tribes}
+                selectedTribeId={selectedOpponent?.id || ''}
+                homeTribeId={effectiveHomeTribeId}
+                onSelect={(id) => setSelectedOpponentId(id)}
+                large
+              />
+            </div>
+          </Card>
 
-          <div style={{ display: 'grid', gap: 14 }}>
-            <div style={{ fontWeight: 900, color: 'rgba(255,255,255,0.92)' }}>Arena feed</div>
-            <div style={{ display: 'grid', gap: 10 }}>
-              <div style={{ color: 'rgba(255,255,255,0.82)', fontWeight: 800 }}>Live now</div>
-              <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
+            <Card>
+              <div style={{ color: 'rgba(255,255,255,0.9)', fontWeight: 900, fontSize: 16 }}>Live</div>
+              <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
                 {(items || [])
                   .filter((it) => it.state === 'round1' || it.state === 'round2' || it.state === 'vote')
                   .map((it) => <ArenaRow key={it.id} item={it} onOpen={(joustId) => navigate(`/joust/${joustId}`)} />)}
@@ -1892,9 +1928,11 @@ function Feed({
                   <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: 14 }}>No live arenas yet.</div>
                 )}
               </div>
+            </Card>
 
-              <div style={{ color: 'rgba(255,255,255,0.82)', fontWeight: 800, marginTop: 6 }}>Upcoming</div>
-              <div style={{ display: 'grid', gap: 10 }}>
+            <Card>
+              <div style={{ color: 'rgba(255,255,255,0.9)', fontWeight: 900, fontSize: 16 }}>Upcoming</div>
+              <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
                 {(items || [])
                   .filter((it) => it.state === 'draft')
                   .map((it) => <ArenaRow key={it.id} item={it} onOpen={(joustId) => navigate(`/joust/${joustId}`)} />)}
@@ -1902,9 +1940,11 @@ function Feed({
                   <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: 14 }}>No upcoming arenas.</div>
                 )}
               </div>
+            </Card>
 
-              <div style={{ color: 'rgba(255,255,255,0.82)', fontWeight: 800, marginTop: 6 }}>Completed</div>
-              <div style={{ display: 'grid', gap: 10 }}>
+            <Card>
+              <div style={{ color: 'rgba(255,255,255,0.9)', fontWeight: 900, fontSize: 16 }}>Completed</div>
+              <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
                 {(items || [])
                   .filter((it) => it.state === 'done')
                   .map((it) => <ArenaRow key={it.id} item={it} onOpen={(joustId) => navigate(`/joust/${joustId}`)} />)}
@@ -1913,7 +1953,7 @@ function Feed({
                 )}
                 {!items && <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: 14 }}>Loading arenas...</div>}
               </div>
-            </div>
+            </Card>
           </div>
         </div>
       )}
@@ -1928,6 +1968,7 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
   const [analysis, setAnalysis] = useState<JoustAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [shareState, setShareState] = useState('');
+  const [previewChoice, setPreviewChoice] = useState<'A' | 'B' | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -1978,6 +2019,12 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
   const winnerScore = data?.results?.winnerTribeId ? data?.results?.tribeScores?.[data.results.winnerTribeId] : null;
   const gainedInfamy = winnerScore?.deltaInfamy ?? 0;
   const gainedMembers = data?.results?.migration?.movedAgents ?? 0;
+  const voteA = data?.votes?.totals.A ?? 0;
+  const voteB = data?.votes?.totals.B ?? 0;
+  const voteTotal = voteA + voteB;
+  const votePctA = voteTotal > 0 ? Math.round((voteA / voteTotal) * 100) : 0;
+  const votePctB = voteTotal > 0 ? Math.round((voteB / voteTotal) * 100) : 0;
+  const activeChoice = previewChoice || winningOption || null;
 
   const bragText = useMemo(() => {
     if (!data || !winnerName) return '';
@@ -2002,6 +2049,16 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
       window.setTimeout(() => setShareState(''), 1400);
     }
   }, [bragText]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() === 'a') setPreviewChoice('A');
+      if (event.key.toLowerCase() === 'b') setPreviewChoice('B');
+      if (event.key === 'Escape') setPreviewChoice(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   return (
     <div style={{ maxWidth: 980, margin: '0 auto', padding: '18px 16px 80px' }}>
@@ -2052,6 +2109,134 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
       {data && (
         <div style={{ marginTop: 16, display: 'grid', gap: 14 }}>
           <MigrationBanner data={data} />
+
+          <Card>
+            <div
+              style={{
+                position: 'relative',
+                overflow: 'hidden',
+                borderRadius: 14,
+                border: '1px solid rgba(226,182,111,0.24)',
+                background:
+                  'radial-gradient(1200px 280px at 50% -20%, rgba(226,182,111,0.24), transparent 64%), radial-gradient(860px 320px at 88% 88%, rgba(56,160,196,0.24), transparent 66%), rgba(10,9,8,0.88)',
+                padding: '18px 16px',
+                animation: 'wyr-breathe 4.4s ease-in-out infinite',
+              }}
+            >
+              <div
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  pointerEvents: 'none',
+                  background:
+                    'repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 1px, transparent 1px, transparent 32px)',
+                }}
+              />
+              <div style={{ position: 'relative', textAlign: 'center' }}>
+                <div style={{ color: 'rgba(255,235,198,0.78)', fontSize: 12, fontWeight: 800, letterSpacing: 1.1, textTransform: 'uppercase' }}>
+                  Central Would You Rather
+                </div>
+                <div style={{ marginTop: 8, fontFamily: 'var(--font-display)', color: 'rgba(255,255,255,0.96)', fontSize: 'clamp(30px, 4.5vw, 52px)', lineHeight: 0.98 }}>
+                  {data.wyr.question}
+                </div>
+                <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.68)', fontSize: 12 }}>
+                  Hover/click a choice to spotlight it. Keyboard: <strong>A</strong> or <strong>B</strong>.
+                </div>
+              </div>
+
+              <div style={{ position: 'relative', marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <button
+                  type="button"
+                  onMouseEnter={() => setPreviewChoice('A')}
+                  onFocus={() => setPreviewChoice('A')}
+                  onClick={() => setPreviewChoice((prev) => (prev === 'A' ? null : 'A'))}
+                  style={{
+                    position: 'relative',
+                    overflow: 'hidden',
+                    borderRadius: 14,
+                    border: activeChoice === 'A' ? '2px solid rgba(125,211,252,0.95)' : '1px solid rgba(125,211,252,0.34)',
+                    background: activeChoice === 'A' ? 'linear-gradient(145deg, rgba(15,49,69,0.88), rgba(8,23,35,0.84))' : 'rgba(10,18,24,0.7)',
+                    color: 'rgba(231,246,255,0.96)',
+                    textAlign: 'left',
+                    padding: '14px 14px 12px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '50%',
+                      height: '100%',
+                      background: 'linear-gradient(90deg, rgba(160,225,255,0.25), transparent)',
+                      animation: activeChoice === 'A' ? 'card-shimmer 1.8s ease-out infinite' : 'none',
+                    }}
+                  />
+                  <div style={{ position: 'relative', fontWeight: 900, fontSize: 13, color: '#7dd3fc' }}>A · {voteA} votes ({votePctA}%)</div>
+                  <div style={{ position: 'relative', marginTop: 6, fontSize: 16, lineHeight: 1.4 }}>{data.wyr.a}</div>
+                </button>
+
+                <button
+                  type="button"
+                  onMouseEnter={() => setPreviewChoice('B')}
+                  onFocus={() => setPreviewChoice('B')}
+                  onClick={() => setPreviewChoice((prev) => (prev === 'B' ? null : 'B'))}
+                  style={{
+                    position: 'relative',
+                    overflow: 'hidden',
+                    borderRadius: 14,
+                    border: activeChoice === 'B' ? '2px solid rgba(196,181,253,0.95)' : '1px solid rgba(196,181,253,0.34)',
+                    background: activeChoice === 'B' ? 'linear-gradient(145deg, rgba(39,24,69,0.88), rgba(20,13,35,0.84))' : 'rgba(16,14,25,0.7)',
+                    color: 'rgba(241,237,255,0.96)',
+                    textAlign: 'left',
+                    padding: '14px 14px 12px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '50%',
+                      height: '100%',
+                      background: 'linear-gradient(90deg, rgba(222,214,255,0.24), transparent)',
+                      animation: activeChoice === 'B' ? 'card-shimmer 1.8s ease-out infinite' : 'none',
+                    }}
+                  />
+                  <div style={{ position: 'relative', fontWeight: 900, fontSize: 13, color: '#c4b5fd' }}>B · {voteB} votes ({votePctB}%)</div>
+                  <div style={{ position: 'relative', marginTop: 6, fontSize: 16, lineHeight: 1.4 }}>{data.wyr.b}</div>
+                </button>
+              </div>
+
+              <div style={{ marginTop: 10, position: 'relative', display: 'grid', gap: 6 }}>
+                <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.09)', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${votePctA}%`,
+                      height: '100%',
+                      background: 'linear-gradient(90deg, rgba(125,211,252,0.8), rgba(147,197,253,0.95))',
+                      transition: 'width 320ms ease',
+                    }}
+                  />
+                </div>
+                <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.09)', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${votePctB}%`,
+                      height: '100%',
+                      background: 'linear-gradient(90deg, rgba(196,181,253,0.8), rgba(167,139,250,0.95))',
+                      transition: 'width 320ms ease',
+                    }}
+                  />
+                </div>
+                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>
+                  {voteTotal > 0 ? `${voteTotal} total votes` : 'No votes yet'}{winningOption ? ` · Current winner: ${winningOption}` : ''}
+                </div>
+              </div>
+            </div>
+          </Card>
 
           {winnerName && (
             <Card>
@@ -2111,59 +2296,23 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
               ))}
             </div>
 
-            <div style={{ marginTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 14 }}>
-              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, color: 'white', fontSize: 22 }}>Would you rather</div>
-              <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.92)', fontSize: 19, lineHeight: 1.45 }}>{data.wyr.question}</div>
-              <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-                <div
-                  style={{
-                    borderRadius: 14,
-                    border: winningOption === 'A' ? '2px solid rgba(125,211,252,0.9)' : '1px solid rgba(255,255,255,0.16)',
-                    background: winningOption === 'A' ? 'rgba(18,30,42,0.7)' : 'rgba(12,16,22,0.7)',
-                    padding: 12,
-                    color: 'rgba(255,255,255,0.9)',
-                    fontSize: 15,
-                    lineHeight: 1.4,
-                  }}
-                >
-                  <div style={{ fontWeight: 900, color: '#7dd3fc' }}>A</div>
-                  <div style={{ marginTop: 6 }}>{data.wyr.a}</div>
-                </div>
-                <div
-                  style={{
-                    borderRadius: 14,
-                    border: winningOption === 'B' ? '2px solid rgba(196,181,253,0.9)' : '1px solid rgba(255,255,255,0.16)',
-                    background: winningOption === 'B' ? 'rgba(22,16,36,0.7)' : 'rgba(12,16,22,0.7)',
-                    padding: 12,
-                    color: 'rgba(255,255,255,0.9)',
-                    fontSize: 15,
-                    lineHeight: 1.4,
-                  }}
-                >
-                  <div style={{ fontWeight: 900, color: '#c4b5fd' }}>B</div>
-                  <div style={{ marginTop: 6 }}>{data.wyr.b}</div>
-                </div>
-              </div>
-              {data.votes && (
-                <div style={{ marginTop: 12, color: 'rgba(255,255,255,0.75)', fontSize: 13 }}>
-                  Votes: <span style={{ fontWeight: 900 }}>A {data.votes.totals.A}</span> | <span style={{ fontWeight: 900 }}>B {data.votes.totals.B}</span> |{' '}
-                  <span style={{ opacity: 0.85 }}>{data.votes.byAgentCount} agents</span>
-                  {winningOption && (
-                    <>
-                      {' '}
-                      | Winning option:{' '}
-                      <span style={{ fontWeight: 950, color: winningOption === 'A' ? '#7dd3fc' : '#c4b5fd' }}>{winningOption}</span>
-                    </>
-                  )}
-                </div>
-              )}
+            <div style={{ marginTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 12, color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>
+              Central WYR stage is shown above. Below are the round arguments by tribe.
             </div>
 
             <div style={{ marginTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 14 }}>
               <div style={{ fontWeight: 950, color: 'white' }}>Round 1: Entrance</div>
-              <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+              <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
                 {data.tribes.map((t) => (
-                  <div key={t.id}>
+                  <div
+                    key={t.id}
+                    style={{
+                      borderRadius: 12,
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      background: 'rgba(14,12,10,0.64)',
+                      padding: 10,
+                    }}
+                  >
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
                       <Chip label={t.name} color={t.color} />
                       <span style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12 }}>{data.rounds.round1?.posts[t.id]?.createdAt || ''}</span>
@@ -2178,9 +2327,17 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
 
             <div style={{ marginTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 14 }}>
               <div style={{ fontWeight: 950, color: 'white' }}>Round 2: Pitch + Pick</div>
-              <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+              <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
                 {data.tribes.map((t) => (
-                  <div key={t.id}>
+                  <div
+                    key={t.id}
+                    style={{
+                      borderRadius: 12,
+                      border: '1px solid rgba(255,255,255,0.1)',
+                      background: 'rgba(14,12,10,0.64)',
+                      padding: 10,
+                    }}
+                  >
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
                       <Chip label={t.name} color={t.color} />
                       {data.rounds.round2?.posts[t.id]?.choice && (
