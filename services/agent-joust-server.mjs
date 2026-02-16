@@ -6,7 +6,7 @@ import fetch from 'node-fetch';
 import { openJoustStore } from './agent-joust-store.mjs';
 
 const PORT = Number(process.env.PORT || process.env.JOUST_PORT || 3030);
-const DB_PATH = process.env.JOUST_DB_PATH || './data/agent-joust.sqlite';
+const DB_PATH = process.env.JOUST_DB_PATH || (process.env.VERCEL ? '/tmp/agent-joust.sqlite' : './data/agent-joust.sqlite');
 const STORE_DRIVER = String(process.env.JOUST_STORE_DRIVER || 'sqlite').toLowerCase();
 const POSTGRES_URL = String(process.env.JOUST_POSTGRES_URL || process.env.DATABASE_URL || '');
 const DEFAULT_TIMEOUT_MS = Number(process.env.JOUST_AGENT_TIMEOUT_MS || 7000);
