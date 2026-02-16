@@ -922,7 +922,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
     if (!frame) return;
 
     const initialRect = frame.getBoundingClientRect();
-    targetRef.current = { x: initialRect.width * 0.5, y: initialRect.height * 0.44 };
+    targetRef.current = { x: initialRect.width * 0.5, y: initialRect.height * 0.5 };
     smoothRef.current = { ...targetRef.current };
 
     let rafId = 0;
@@ -931,7 +931,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
 
     const addEcho = (x: number, y: number, speed: number) => {
       const id = ++echoIdRef.current;
-      const size = 96 + Math.min(1.8, speed) * 120;
+      const size = 82 + Math.min(1.4, speed) * 88;
       setEchoes((prev) => [...prev.slice(-8), { id, x, y, size }]);
       window.setTimeout(() => {
         setEchoes((prev) => prev.filter((echo) => echo.id !== id));
@@ -958,7 +958,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
 
     const onLeave = () => {
       const rect = frame.getBoundingClientRect();
-      targetRef.current = { x: rect.width * 0.5, y: rect.height * 0.44 };
+      targetRef.current = { x: rect.width * 0.5, y: rect.height * 0.5 };
     };
 
     const tick = () => {
@@ -966,12 +966,14 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
       smoothRef.current.x += (targetRef.current.x - smoothRef.current.x) * 0.14;
       smoothRef.current.y += (targetRef.current.y - smoothRef.current.y) * 0.14;
       velocityRef.current *= 0.92;
-      const spotSize = 140 + Math.min(1.3, velocityRef.current) * 120;
+      const spotSize = 124 + Math.min(1.15, velocityRef.current) * 92;
       const px = ((smoothRef.current.x / Math.max(1, rect.width)) - 0.5) * 2;
       const py = ((smoothRef.current.y / Math.max(1, rect.height)) - 0.5) * 2;
+      const angle = 34 + px * 8 + py * 6;
       frame.style.setProperty('--spot-x', `${smoothRef.current.x}px`);
       frame.style.setProperty('--spot-y', `${smoothRef.current.y}px`);
       frame.style.setProperty('--spot-size', `${spotSize}px`);
+      frame.style.setProperty('--spot-angle', `${angle.toFixed(2)}deg`);
       frame.style.setProperty('--px', px.toFixed(4));
       frame.style.setProperty('--py', py.toFixed(4));
       rafId = window.requestAnimationFrame(tick);
@@ -997,8 +999,9 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           minHeight: '100vh',
           overflow: 'hidden',
           '--spot-x': '50%',
-          '--spot-y': '44%',
+          '--spot-y': '50%',
           '--spot-size': '170px',
+          '--spot-angle': '34deg',
           '--px': '0',
           '--py': '0',
         } as React.CSSProperties
@@ -1049,8 +1052,8 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
             height: echo.size,
             transform: 'translate(-50%, -50%)',
             borderRadius: '50%',
-            border: '1px solid rgba(151,222,244,0.48)',
-            background: 'radial-gradient(circle, rgba(126,203,232,0.22), rgba(126,203,232,0.04) 58%, transparent 72%)',
+            border: '1px solid rgba(151,222,244,0.36)',
+            background: 'radial-gradient(circle, rgba(126,203,232,0.16), rgba(126,203,232,0.02) 60%, transparent 74%)',
             animation: 'spot-echo 500ms ease-out forwards',
             pointerEvents: 'none',
           }}
@@ -1067,10 +1070,13 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           height: 'var(--spot-size)',
           transform: 'translate(-50%, -50%)',
           borderRadius: '50%',
-          border: '2px solid rgba(199,235,249,0.78)',
-          background: 'rgba(255,255,255,0.05)',
-          boxShadow: '0 0 34px rgba(104,207,241,0.25), inset 0 0 24px rgba(232,245,255,0.2)',
-          backdropFilter: 'invert(1) contrast(1.15)',
+          border: '2px solid rgba(199,235,249,0.82)',
+          background:
+            'radial-gradient(circle at 30% 28%, rgba(255,255,255,0.24) 0%, rgba(201,232,246,0.12) 24%, rgba(103,173,205,0.08) 43%, rgba(8,24,38,0.08) 62%, rgba(6,11,17,0.02) 78%, transparent 100%)',
+          boxShadow:
+            '0 0 20px rgba(86,190,226,0.22), inset 0 0 0 1px rgba(239,249,255,0.24), inset 0 -14px 24px rgba(15,40,58,0.2)',
+          backdropFilter: 'saturate(1.15) brightness(1.08)',
+          WebkitBackdropFilter: 'saturate(1.15) brightness(1.08)',
           pointerEvents: 'none',
           transition: 'width 280ms ease, height 280ms ease',
         }}
@@ -1081,12 +1087,60 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           position: 'absolute',
           left: 'var(--spot-x)',
           top: 'var(--spot-y)',
-          width: 'calc(var(--spot-size) * 0.42)',
-          height: 7,
-          transform: 'translate(40%, 180%) rotate(36deg)',
+          width: 'calc(var(--spot-size) * 0.68)',
+          height: 'calc(var(--spot-size) * 0.68)',
+          transform: 'translate(-50%, -50%)',
+          borderRadius: '50%',
+          border: '1px solid rgba(220,245,255,0.38)',
+          background: 'radial-gradient(circle at 62% 68%, rgba(0,0,0,0.08), transparent 74%)',
+          boxShadow: 'inset 0 0 14px rgba(224,245,255,0.18)',
+          pointerEvents: 'none',
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          left: 'var(--spot-x)',
+          top: 'var(--spot-y)',
+          width: 'calc(var(--spot-size) * 0.34)',
+          height: 'calc(var(--spot-size) * 0.13)',
+          transform: 'translate(-28%, -136%) rotate(-18deg)',
           borderRadius: 999,
-          background: 'linear-gradient(90deg, rgba(184,225,241,0.9), rgba(86,165,196,0.8))',
-          boxShadow: '0 0 18px rgba(90,186,222,0.45)',
+          background: 'linear-gradient(90deg, rgba(255,255,255,0.44), rgba(255,255,255,0.04))',
+          pointerEvents: 'none',
+          filter: 'blur(0.2px)',
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          left: 'var(--spot-x)',
+          top: 'var(--spot-y)',
+          width: 'calc(var(--spot-size) * 0.42)',
+          height: 9,
+          transform: 'translate(42%, 182%) rotate(var(--spot-angle))',
+          transformOrigin: '12% 50%',
+          borderRadius: 999,
+          background: 'linear-gradient(90deg, rgba(234,247,255,0.9), rgba(101,178,208,0.82))',
+          border: '1px solid rgba(203,230,242,0.5)',
+          boxShadow: '0 0 14px rgba(90,186,222,0.36)',
+          pointerEvents: 'none',
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          left: 'var(--spot-x)',
+          top: 'var(--spot-y)',
+          width: 16,
+          height: 16,
+          transform: 'translate(calc(var(--spot-size) * 0.56), calc(var(--spot-size) * 0.56))',
+          borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(228,246,255,0.95), rgba(107,177,205,0.85))',
+          boxShadow: '0 0 12px rgba(90,186,222,0.35)',
           pointerEvents: 'none',
         }}
       />
