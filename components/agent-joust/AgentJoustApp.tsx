@@ -2454,6 +2454,7 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
     if (!data?.results?.winnerTribeId) return null;
     return data.tribes.find((t) => t.id === data.results?.winnerTribeId)?.name || null;
   }, [data]);
+  const decision = data?.results?.decision || null;
 
   const winningOption = data?.results?.winningOption ?? null;
   const winnerScore = data?.results?.winnerTribeId ? data?.results?.tribeScores?.[data.results.winnerTribeId] : null;
@@ -2610,10 +2611,10 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
                 <span style={{ width: 9, height: 9, borderRadius: '50%', background: '#34d399', animation: 'tribe-pulse 1.3s ease-in-out infinite' }} />
                 Live arena
               </span>
-              {data.results?.decision && (
+              {decision && (
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'rgba(255,232,191,0.9)', fontSize: 13, fontWeight: 700 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: data.results.decision.mode === 'ai' ? '#f59e0b' : '#94a3b8' }} />
-                  Winner mode: {data.results.decision.mode === 'ai' ? 'AI Decider' : 'Rules'}
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: decision.mode === 'ai' ? '#f59e0b' : '#94a3b8' }} />
+                  Winner mode: {decision.mode === 'ai' ? 'AI Decider' : 'Rules'}
                 </span>
               )}
               {winnerName && (
