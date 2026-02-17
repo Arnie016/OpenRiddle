@@ -337,8 +337,67 @@ function pickRandomWyr() {
 }
 
 const API_BASE_STORAGE_KEY = 'joust_api_base';
+const AUTO_PLAY_STORAGE_PREFIX = 'joust_auto_play_';
 
 type ApiFn = <T>(path: string, init?: RequestInit) => Promise<T>;
+
+type TutorialScenario = {
+  id: string;
+  title: string;
+  summary: string;
+  newcomers: number;
+  opponents: number;
+  autoplay: boolean;
+  wyr: { question: string; a: string; b: string };
+};
+
+const TUTORIAL_SCENARIOS: TutorialScenario[] = [
+  {
+    id: 'duel',
+    title: 'Duel Sprint (1v1)',
+    summary: 'Two tribes, fast three-step walkthrough.',
+    newcomers: 0,
+    opponents: 1,
+    autoplay: true,
+    wyr: {
+      question: 'Riddle: Would you rather command with precision or win with charisma?',
+      a: 'Command with precision',
+      b: 'Win with charisma',
+    },
+  },
+  {
+    id: 'frontier',
+    title: 'Frontier Rush (+5 joins)',
+    summary: 'Simulate 5 new arrivals and launch a richer arena.',
+    newcomers: 5,
+    opponents: 2,
+    autoplay: true,
+    wyr: {
+      question: 'Riddle: Would you rather scale fast with risk, or scale slow with certainty?',
+      a: 'Scale fast with risk',
+      b: 'Scale slow with certainty',
+    },
+  },
+  {
+    id: 'clanwar',
+    title: 'Clan War (multi-tribe)',
+    summary: 'Large clash with several rival tribes.',
+    newcomers: 3,
+    opponents: 3,
+    autoplay: true,
+    wyr: {
+      question: 'Riddle: Would you rather defend your border, or invade for momentum?',
+      a: 'Defend the border',
+      b: 'Invade for momentum',
+    },
+  },
+];
+
+const JOUST_STAGE_ORDER: JoustDetail['state'][] = ['draft', 'round1', 'round2', 'vote', 'done'];
+
+function autoPlayKey(joustId: string) {
+  return `${AUTO_PLAY_STORAGE_PREFIX}${joustId}`;
+}
 
 function normalizeBase(value: string) {
   return value.trim().replace(/\/$/, '');
@@ -931,7 +990,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
 
     const addEcho = (x: number, y: number, speed: number) => {
       const id = ++echoIdRef.current;
-      const size = 82 + Math.min(1.4, speed) * 88;
+      const size = 58 + Math.min(1.2, speed) * 46;
       setEchoes((prev) => [...prev.slice(-8), { id, x, y, size }]);
       window.setTimeout(() => {
         setEchoes((prev) => prev.filter((echo) => echo.id !== id));
@@ -950,7 +1009,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
       lastTs = now;
       const speed = Math.hypot(dx, dy) / dt;
       velocityRef.current = Math.max(velocityRef.current, speed * 7.5);
-      if (speed > 0.38 && now - lastEchoAt > 68) {
+      if (speed > 0.56 && now - lastEchoAt > 120) {
         addEcho(x, y, speed * 4.4);
         lastEchoAt = now;
       }
@@ -966,7 +1025,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
       smoothRef.current.x += (targetRef.current.x - smoothRef.current.x) * 0.14;
       smoothRef.current.y += (targetRef.current.y - smoothRef.current.y) * 0.14;
       velocityRef.current *= 0.92;
-      const spotSize = 124 + Math.min(1.15, velocityRef.current) * 92;
+      const spotSize = 96 + Math.min(1.05, velocityRef.current) * 64;
       const px = ((smoothRef.current.x / Math.max(1, rect.width)) - 0.5) * 2;
       const py = ((smoothRef.current.y / Math.max(1, rect.height)) - 0.5) * 2;
       const angle = 34 + px * 8 + py * 6;
@@ -1000,7 +1059,7 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           overflow: 'hidden',
           '--spot-x': '50%',
           '--spot-y': '50%',
-          '--spot-size': '170px',
+          '--spot-size': '128px',
           '--spot-angle': '34deg',
           '--px': '0',
           '--py': '0',
@@ -1052,8 +1111,8 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
             height: echo.size,
             transform: 'translate(-50%, -50%)',
             borderRadius: '50%',
-            border: '1px solid rgba(151,222,244,0.36)',
-            background: 'radial-gradient(circle, rgba(126,203,232,0.16), rgba(126,203,232,0.02) 60%, transparent 74%)',
+            border: '1px solid rgba(151,222,244,0.2)',
+            background: 'radial-gradient(circle, rgba(126,203,232,0.08), rgba(126,203,232,0.01) 60%, transparent 74%)',
             animation: 'spot-echo 500ms ease-out forwards',
             pointerEvents: 'none',
           }}
@@ -1070,13 +1129,11 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           height: 'var(--spot-size)',
           transform: 'translate(-50%, -50%)',
           borderRadius: '50%',
-          border: '2px solid rgba(199,235,249,0.82)',
-          background:
-            'radial-gradient(circle at 30% 28%, rgba(255,255,255,0.24) 0%, rgba(201,232,246,0.12) 24%, rgba(103,173,205,0.08) 43%, rgba(8,24,38,0.08) 62%, rgba(6,11,17,0.02) 78%, transparent 100%)',
-          boxShadow:
-            '0 0 20px rgba(86,190,226,0.22), inset 0 0 0 1px rgba(239,249,255,0.24), inset 0 -14px 24px rgba(15,40,58,0.2)',
-          backdropFilter: 'saturate(1.15) brightness(1.08)',
-          WebkitBackdropFilter: 'saturate(1.15) brightness(1.08)',
+          border: '1.5px solid rgba(204,238,251,0.78)',
+          background: 'rgba(192,228,244,0.06)',
+          boxShadow: '0 0 12px rgba(90,186,222,0.2)',
+          backdropFilter: 'saturate(1.02)',
+          WebkitBackdropFilter: 'saturate(1.02)',
           pointerEvents: 'none',
           transition: 'width 280ms ease, height 280ms ease',
         }}
@@ -1087,29 +1144,12 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           position: 'absolute',
           left: 'var(--spot-x)',
           top: 'var(--spot-y)',
-          width: 'calc(var(--spot-size) * 0.68)',
-          height: 'calc(var(--spot-size) * 0.68)',
-          transform: 'translate(-50%, -50%)',
-          borderRadius: '50%',
-          border: '1px solid rgba(220,245,255,0.38)',
-          background: 'radial-gradient(circle at 62% 68%, rgba(0,0,0,0.08), transparent 74%)',
-          boxShadow: 'inset 0 0 14px rgba(224,245,255,0.18)',
-          pointerEvents: 'none',
-        }}
-      />
-      <div
-        aria-hidden
-        style={{
-          position: 'absolute',
-          left: 'var(--spot-x)',
-          top: 'var(--spot-y)',
-          width: 'calc(var(--spot-size) * 0.34)',
-          height: 'calc(var(--spot-size) * 0.13)',
-          transform: 'translate(-28%, -136%) rotate(-18deg)',
+          width: 'calc(var(--spot-size) * 0.28)',
+          height: 'calc(var(--spot-size) * 0.1)',
+          transform: 'translate(-24%, -132%) rotate(-18deg)',
           borderRadius: 999,
-          background: 'linear-gradient(90deg, rgba(255,255,255,0.44), rgba(255,255,255,0.04))',
+          background: 'linear-gradient(90deg, rgba(255,255,255,0.3), rgba(255,255,255,0.02))',
           pointerEvents: 'none',
-          filter: 'blur(0.2px)',
         }}
       />
       <div
@@ -1118,29 +1158,13 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           position: 'absolute',
           left: 'var(--spot-x)',
           top: 'var(--spot-y)',
-          width: 'calc(var(--spot-size) * 0.42)',
-          height: 9,
-          transform: 'translate(42%, 182%) rotate(var(--spot-angle))',
+          width: 'calc(var(--spot-size) * 0.3)',
+          height: 5,
+          transform: 'translate(42%, 168%) rotate(var(--spot-angle))',
           transformOrigin: '12% 50%',
           borderRadius: 999,
-          background: 'linear-gradient(90deg, rgba(234,247,255,0.9), rgba(101,178,208,0.82))',
-          border: '1px solid rgba(203,230,242,0.5)',
-          boxShadow: '0 0 14px rgba(90,186,222,0.36)',
-          pointerEvents: 'none',
-        }}
-      />
-      <div
-        aria-hidden
-        style={{
-          position: 'absolute',
-          left: 'var(--spot-x)',
-          top: 'var(--spot-y)',
-          width: 16,
-          height: 16,
-          transform: 'translate(calc(var(--spot-size) * 0.56), calc(var(--spot-size) * 0.56))',
-          borderRadius: '50%',
-          background: 'radial-gradient(circle, rgba(228,246,255,0.95), rgba(107,177,205,0.85))',
-          boxShadow: '0 0 12px rgba(90,186,222,0.35)',
+          background: 'rgba(196,229,244,0.7)',
+          boxShadow: '0 0 8px rgba(90,186,222,0.2)',
           pointerEvents: 'none',
         }}
       />
@@ -1591,6 +1615,7 @@ function Feed({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<'guide' | 'start' | 'live'>('guide');
+  const [runningScenarioId, setRunningScenarioId] = useState('');
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [newTribeName, setNewTribeName] = useState('My Tribe');
   const [joinTribeId, setJoinTribeId] = useState('');
@@ -1653,6 +1678,20 @@ function Feed({
           : sizeGap <= -4
             ? 'Favored'
             : 'Even';
+  const totalMapMembers = useMemo(() => tribes.reduce((sum, tribe) => sum + Math.max(0, tribe.memberCount || 0), 0), [tribes]);
+  const mapShare = useMemo(
+    () =>
+      tribes
+        .map((tribe) => ({
+          id: tribe.id,
+          name: tribe.name,
+          color: tribe.color,
+          members: tribe.memberCount,
+          share: totalMapMembers > 0 ? Math.round((tribe.memberCount / totalMapMembers) * 100) : 0,
+        }))
+        .sort((a, b) => b.members - a.members),
+    [tribes, totalMapMembers],
+  );
 
   const randomizeWyr = useCallback(() => {
     const pick = pickRandomWyr();
@@ -1768,26 +1807,35 @@ function Feed({
     });
   }, [api, execute, joinTribeId, selectedAgentId, selectedAgentTribeId]);
 
-  const createJoust = useCallback(() => {
-    return execute(async () => {
-      if (!effectiveHomeTribeId) throw new Error('Pick your home tribe');
-      if (!selectedOpponentId) throw new Error('Pick an opponent tribe');
-      if (effectiveHomeTribeId === selectedOpponentId) throw new Error('Opponent must be different');
-      const r = await api<{ joustId: string }>('/api/joust/create', {
-        method: 'POST',
-        body: JSON.stringify({
-          title: createState.title,
-          tribeIds: [effectiveHomeTribeId, selectedOpponentId],
-          wyr: {
-            question: createState.question,
-            a: createState.a,
-            b: createState.b,
-          },
-        }),
+  const launchChallenge = useCallback(
+    (autoplay: boolean) => {
+      return execute(async () => {
+        if (!effectiveHomeTribeId) throw new Error('Pick your home tribe');
+        if (!selectedOpponentId) throw new Error('Pick an opponent tribe');
+        if (effectiveHomeTribeId === selectedOpponentId) throw new Error('Opponent must be different');
+        const r = await api<{ joustId: string }>('/api/joust/create', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: createState.title,
+            tribeIds: [effectiveHomeTribeId, selectedOpponentId],
+            wyr: {
+              question: createState.question,
+              a: createState.a,
+              b: createState.b,
+            },
+          }),
+        });
+        if (autoplay && typeof window !== 'undefined') {
+          window.sessionStorage.setItem(autoPlayKey(r.joustId), '1');
+        }
+        navigate(`/joust/${r.joustId}`);
       });
-      navigate(`/joust/${r.joustId}`);
-    });
-  }, [api, createState, execute, navigate, selectedOpponentId, effectiveHomeTribeId]);
+    },
+    [api, createState, effectiveHomeTribeId, execute, navigate, selectedOpponentId],
+  );
+
+  const createJoust = useCallback(() => launchChallenge(false), [launchChallenge]);
+  const createJoustWithAutoPlay = useCallback(() => launchChallenge(true), [launchChallenge]);
 
   const seed = useCallback(() => {
     return execute(async () => {
@@ -1796,25 +1844,92 @@ function Feed({
     });
   }, [api, execute, navigate]);
 
-  const quickConnect = useCallback(() => {
-    return execute(async () => {
+  const createQuickstartParticipant = useCallback(
+    async (labelPrefix: string) => {
       const suffix = Math.random().toString(36).slice(2, 6);
-      const displayName = `Visitor-${suffix}`;
-      const tribeName = `${displayName} Guild`;
-      const r = await api<{ agentId: string; joustId: string }>('/api/onboard/quickstart', {
+      const displayName = `${labelPrefix}-${suffix}`;
+      return api<{ agentId: string; tribeId: string; joustId: string }>('/api/onboard/quickstart', {
         method: 'POST',
         body: JSON.stringify({
           displayName,
-          tribeName,
+          tribeName: `${displayName} Guild`,
           callbackUrl: 'local://stub',
-          vibeTags: ['visitor', 'quickstart'],
+          vibeTags: ['tutorial', 'quickstart'],
           title: `${displayName} First Arena`,
         }),
       });
+    },
+    [api],
+  );
+
+  const quickConnect = useCallback(() => {
+    return execute(async () => {
+      const r = await createQuickstartParticipant('Visitor');
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(autoPlayKey(r.joustId), '1');
+      }
       setSelectedAgentId(r.agentId);
       navigate(`/joust/${r.joustId}`);
     });
-  }, [api, execute, navigate]);
+  }, [createQuickstartParticipant, execute, navigate]);
+
+  const simulateArrivals = useCallback(
+    (count: number) => {
+      return execute(async () => {
+        const total = Math.max(1, Math.min(10, count));
+        for (let index = 0; index < total; index += 1) {
+          await createQuickstartParticipant('Scout');
+        }
+      });
+    },
+    [createQuickstartParticipant, execute],
+  );
+
+  const runScenario = useCallback(
+    (scenario: TutorialScenario) => {
+      return execute(async () => {
+        setRunningScenarioId(scenario.id);
+        try {
+          const newcomers = Math.max(0, Math.min(10, scenario.newcomers));
+          for (let index = 0; index < newcomers; index += 1) {
+            await createQuickstartParticipant('Scenario');
+          }
+
+          let freshTribes = await api<TribeRecord[]>('/api/tribes');
+          const minimumTribes = Math.max(2, scenario.opponents + 1);
+          let missing = minimumTribes - freshTribes.length;
+          while (missing > 0) {
+            await createQuickstartParticipant('Clan');
+            freshTribes = await api<TribeRecord[]>('/api/tribes');
+            missing = minimumTribes - freshTribes.length;
+          }
+
+          const homeTribeId = selectedAgentTribeId || freshTribes[0]?.id;
+          if (!homeTribeId) throw new Error('Unable to resolve a home tribe');
+          const maxOpponents = Math.max(1, freshTribes.length - 1);
+          const opponents = Math.max(1, Math.min(scenario.opponents, maxOpponents));
+
+          const response = await api<{ joustId: string }>('/api/joust/create-auto', {
+            method: 'POST',
+            body: JSON.stringify({
+              title: `Scenario: ${scenario.title}`,
+              homeTribeId,
+              opponents,
+              wyr: scenario.wyr,
+            }),
+          });
+
+          if (scenario.autoplay && typeof window !== 'undefined') {
+            window.sessionStorage.setItem(autoPlayKey(response.joustId), '1');
+          }
+          navigate(`/joust/${response.joustId}`);
+        } finally {
+          setRunningScenarioId('');
+        }
+      });
+    },
+    [api, createQuickstartParticipant, execute, navigate, selectedAgentTribeId],
+  );
 
   const connectionColor =
     connection.status === 'online' ? '#34d399' : connection.status === 'checking' ? '#fbbf24' : '#f87171';
@@ -1864,11 +1979,11 @@ function Feed({
               <MonoBlock text={publicEntryLink} />
             </div>
             <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.82)', lineHeight: 1.6 }}>
-              After opening the link: click <strong>Get Started</strong> → click <strong>Quick connect now</strong> → you enter a live arena instantly.
+              After opening the link: <strong>Get Started</strong> → <strong>Quick connect now</strong> → an auto-play joust runs from draft to winner with live tribe movement.
             </div>
             <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <Button onClick={quickConnect} disabled={busy}>
-                Quick connect now
+                Quick connect now (auto-play)
               </Button>
               <Button kind="ghost" onClick={() => setActiveTab('start')}>
                 Open connect controls
@@ -1878,7 +1993,39 @@ function Feed({
               </Button>
             </div>
           </Card>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+
+          <Card>
+            <div style={{ fontWeight: 900, color: 'rgba(255,245,219,0.96)', fontSize: 18 }}>Tutorial scenarios (comprehensive demos)</div>
+            <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.78)', lineHeight: 1.6 }}>
+              Each scenario prepares tribes, opens a grand WYR arena, and auto-plays all steps so users immediately understand the mechanics.
+            </div>
+            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
+              {TUTORIAL_SCENARIOS.map((scenario) => (
+                <div
+                  key={scenario.id}
+                  style={{
+                    borderRadius: 12,
+                    border: '1px solid rgba(226,182,111,0.24)',
+                    background: 'rgba(10,9,8,0.62)',
+                    padding: 12,
+                  }}
+                >
+                  <div style={{ color: 'rgba(255,244,218,0.96)', fontWeight: 900, fontSize: 15 }}>{scenario.title}</div>
+                  <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.72)', fontSize: 12, lineHeight: 1.45 }}>{scenario.summary}</div>
+                  <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.62)', fontSize: 11 }}>
+                    +{scenario.newcomers} newcomers · {scenario.opponents + 1} tribes in battle
+                  </div>
+                  <div style={{ marginTop: 10 }}>
+                    <Button onClick={() => void runScenario(scenario)} disabled={busy}>
+                      {runningScenarioId === scenario.id ? 'Launching...' : 'Launch scenario'}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14 }}>
             <Card>
               <div style={{ fontWeight: 900, color: 'rgba(255,245,219,0.96)', fontSize: 16 }}>For non-technical users</div>
               <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.78)', lineHeight: 1.6 }}>
@@ -1893,6 +2040,20 @@ function Feed({
               <div style={{ marginTop: 10 }}>
                 <Button kind="ghost" onClick={() => navigate('/joust/quickstart')}>
                   Agent quickstart page
+                </Button>
+              </div>
+            </Card>
+            <Card>
+              <div style={{ fontWeight: 900, color: 'rgba(255,245,219,0.96)', fontSize: 16 }}>No tribes yet? simulate growth</div>
+              <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.78)', lineHeight: 1.6 }}>
+                Click once to simulate 5 new participants joining. This populates the map so clan-war style battles are meaningful.
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Button kind="ghost" onClick={() => void simulateArrivals(5)} disabled={busy}>
+                  Simulate 5 joins
+                </Button>
+                <Button kind="ghost" onClick={() => setActiveTab('live')}>
+                  View live map
                 </Button>
               </div>
             </Card>
@@ -2036,17 +2197,54 @@ function Feed({
                       options={opponentTribes.length > 0 ? opponentTribes.map((t) => ({ value: t.id, label: `${t.name} (${t.memberCount})` })) : [{ value: '', label: 'No rivals yet' }]}
                     />
                   </label>
-                  <div style={{ color: 'rgba(255,255,255,0.72)', fontSize: 13 }}>
-                    <div style={{ fontWeight: 800, color: 'rgba(255,245,219,0.96)' }}>{createState.title}</div>
-                    <div style={{ marginTop: 6 }}>{createState.question}</div>
-                    <div style={{ marginTop: 6, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                      <span style={{ color: '#7dd3fc' }}>A: {createState.a}</span>
-                      <span style={{ color: '#c4b5fd' }}>B: {createState.b}</span>
+                  <div
+                    style={{
+                      borderRadius: 14,
+                      border: '1px solid rgba(226,182,111,0.26)',
+                      background:
+                        'radial-gradient(760px 260px at 50% -20%, rgba(226,182,111,0.22), transparent 62%), radial-gradient(620px 200px at 88% 100%, rgba(56,160,196,0.22), transparent 68%), rgba(10,9,8,0.78)',
+                      padding: '12px 12px 10px',
+                    }}
+                  >
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 8, alignItems: 'center' }}>
+                      <div style={{ color: 'rgba(203,236,253,0.9)', fontSize: 12, fontWeight: 800, textAlign: 'left' }}>
+                        {homeTribe?.name || 'Home tribe'}
+                        <div style={{ marginTop: 3, color: 'rgba(255,255,255,0.62)', fontWeight: 600 }}>{homeTribe?.memberCount || 0} agents</div>
+                      </div>
+                      <div style={{ color: 'rgba(255,238,206,0.94)', fontWeight: 900, fontSize: 14 }}>VS</div>
+                      <div style={{ color: 'rgba(226,214,255,0.9)', fontSize: 12, fontWeight: 800, textAlign: 'right' }}>
+                        {selectedOpponent?.name || 'Rival tribe'}
+                        <div style={{ marginTop: 3, color: 'rgba(255,255,255,0.62)', fontWeight: 600 }}>{selectedOpponent?.memberCount || 0} agents</div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 10, color: 'rgba(255,245,219,0.98)', fontWeight: 900, fontSize: 14, textAlign: 'center' }}>{createState.title}</div>
+                    <div
+                      style={{
+                        marginTop: 6,
+                        textAlign: 'center',
+                        fontFamily: 'var(--font-display)',
+                        color: 'rgba(255,255,255,0.96)',
+                        fontSize: 'clamp(24px, 3.7vw, 40px)',
+                        lineHeight: 1.02,
+                      }}
+                    >
+                      {createState.question}
+                    </div>
+                    <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                      <div style={{ borderRadius: 10, border: '1px solid rgba(125,211,252,0.34)', background: 'rgba(7,22,32,0.75)', padding: '8px 9px', color: '#bde9ff' }}>
+                        A: {createState.a}
+                      </div>
+                      <div style={{ borderRadius: 10, border: '1px solid rgba(196,181,253,0.34)', background: 'rgba(20,12,33,0.75)', padding: '8px 9px', color: '#ddd0ff' }}>
+                        B: {createState.b}
+                      </div>
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <Button onClick={createJoust} disabled={busy || !effectiveHomeTribeId || !selectedOpponent}>
                       Challenge now
+                    </Button>
+                    <Button kind="ghost" onClick={createJoustWithAutoPlay} disabled={busy || !effectiveHomeTribeId || !selectedOpponent}>
+                      Challenge + auto tutorial
                     </Button>
                     <Button kind="ghost" onClick={randomizeWyr}>
                       Shuffle prompt
@@ -2126,6 +2324,34 @@ function Feed({
                 large
               />
             </div>
+            <div style={{ marginTop: 12 }}>
+              <div style={{ color: 'rgba(255,245,219,0.94)', fontWeight: 900, fontSize: 14 }}>Map control share (updates after each win)</div>
+              <div style={{ marginTop: 10, display: 'grid', gap: 7 }}>
+                {mapShare.slice(0, 6).map((entry) => (
+                  <div key={`share-${entry.id}`} style={{ display: 'grid', gap: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
+                      <span style={{ color: 'rgba(255,255,255,0.84)' }}>
+                        {entry.name} · {entry.members} agents
+                      </span>
+                      <span style={{ color: 'rgba(255,255,255,0.64)' }}>{entry.share}%</span>
+                    </div>
+                    <div style={{ height: 7, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          width: `${entry.share}%`,
+                          height: '100%',
+                          background: `linear-gradient(90deg, ${entry.color}, rgba(255,255,255,0.85))`,
+                          transition: 'width 340ms ease',
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+                {mapShare.length === 0 && (
+                  <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>No tribes yet. Run a scenario or quick connect to populate the world map.</div>
+                )}
+              </div>
+            </div>
           </Card>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
@@ -2180,6 +2406,9 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
   const [analyzing, setAnalyzing] = useState(false);
   const [shareState, setShareState] = useState('');
   const [previewChoice, setPreviewChoice] = useState<'A' | 'B' | null>(null);
+  const [autoPlayStatus, setAutoPlayStatus] = useState('');
+  const autoPlayRunningRef = useRef(false);
+  const autoPlayAnalyzedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -2236,6 +2465,35 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
   const votePctA = voteTotal > 0 ? Math.round((voteA / voteTotal) * 100) : 0;
   const votePctB = voteTotal > 0 ? Math.round((voteB / voteTotal) * 100) : 0;
   const activeChoice = previewChoice || winningOption || null;
+  const duelLeft = data?.tribes[0] || null;
+  const duelRight = data?.tribes[1] || null;
+  const duelLeftAgent = duelLeft?.members?.[0]?.displayName || 'Left champion';
+  const duelRightAgent = duelRight?.members?.[0]?.displayName || 'Right champion';
+  const duelLeftPower = Math.max(1, duelLeft?.size || 1);
+  const duelRightPower = Math.max(1, duelRight?.size || 1);
+  const duelTotalPower = duelLeftPower + duelRightPower;
+  const duelLeftPct = Math.round((duelLeftPower / duelTotalPower) * 100);
+  const duelRightPct = Math.max(0, 100 - duelLeftPct);
+  const stepIndex = data ? JOUST_STAGE_ORDER.indexOf(data.state) : -1;
+  const territoryTotal = data ? Math.max(1, data.tribes.reduce((sum, tribe) => sum + Math.max(0, tribe.size || 0), 0)) : 1;
+  const territoryShare = data
+    ? data.tribes
+        .map((tribe) => ({
+          id: tribe.id,
+          name: tribe.name,
+          color: tribe.color,
+          size: tribe.size,
+          pct: Math.round(((tribe.size || 0) / territoryTotal) * 100),
+        }))
+        .sort((a, b) => b.size - a.size)
+    : [];
+  const stageLabelMap: Record<JoustDetail['state'], string> = {
+    draft: 'Draft',
+    round1: 'Entrance',
+    round2: 'Pitch',
+    vote: 'Vote',
+    done: 'Winner',
+  };
 
   const bragText = useMemo(() => {
     if (!data || !winnerName) return '';
@@ -2271,6 +2529,56 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  useEffect(() => {
+    autoPlayRunningRef.current = false;
+    autoPlayAnalyzedRef.current = false;
+    setAutoPlayStatus('');
+  }, [id]);
+
+  const enableAutoPlay = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(autoPlayKey(id), '1');
+    }
+    setAutoPlayStatus('Autoplay engaged. Advancing arena steps...');
+  }, [id]);
+
+  useEffect(() => {
+    if (!data || typeof window === 'undefined') return;
+    const key = autoPlayKey(id);
+    const shouldAutoPlay = window.sessionStorage.getItem(key) === '1';
+    if (!shouldAutoPlay) return;
+
+    if (data.state === 'done') {
+      window.sessionStorage.removeItem(key);
+      autoPlayRunningRef.current = false;
+      setAutoPlayStatus('Tutorial complete. Winner crowned.');
+      if (!autoPlayAnalyzedRef.current) {
+        autoPlayAnalyzedRef.current = true;
+        void analyze();
+      }
+      return;
+    }
+
+    if (autoPlayRunningRef.current) return;
+    autoPlayRunningRef.current = true;
+    const nextState = JOUST_STAGE_ORDER[Math.min(JOUST_STAGE_ORDER.length - 1, stepIndex + 1)];
+    setAutoPlayStatus(`Autoplay: ${data.state} → ${nextState}`);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        await api(`/api/joust/${id}/step`, { method: 'POST', body: '{}' });
+        await refresh();
+      } catch (e: any) {
+        setError(e?.message || String(e));
+        window.sessionStorage.removeItem(key);
+      } finally {
+        autoPlayRunningRef.current = false;
+      }
+    }, 860);
+
+    return () => window.clearTimeout(timer);
+  }, [analyze, api, data, id, refresh, stepIndex]);
+
   return (
     <div style={{ maxWidth: 980, margin: '0 auto', padding: '18px 16px 80px' }}>
       <Card>
@@ -2282,6 +2590,9 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
             <div style={{ display: 'flex', gap: 10 }}>
               <Button kind="ghost" onClick={refresh} disabled={busy}>
                 Refresh
+              </Button>
+              <Button kind="ghost" onClick={enableAutoPlay} disabled={busy || !data || data.state === 'done'}>
+                Auto-play tutorial
               </Button>
               <Button onClick={step} disabled={busy || !data || data.state === 'done'}>
                 Run next step
@@ -2311,6 +2622,9 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
                 </span>
               )}
             </div>
+            {autoPlayStatus && (
+              <div style={{ marginTop: 8, color: 'rgba(160,240,212,0.86)', fontSize: 12, fontWeight: 700 }}>{autoPlayStatus}</div>
+            )}
           </div>
         </div>
       </Card>
@@ -2343,15 +2657,106 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
                     'repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 1px, transparent 1px, transparent 32px)',
                 }}
               />
-              <div style={{ position: 'relative', textAlign: 'center' }}>
-                <div style={{ color: 'rgba(255,235,198,0.78)', fontSize: 12, fontWeight: 800, letterSpacing: 1.1, textTransform: 'uppercase' }}>
-                  Central Would You Rather
+              <div style={{ position: 'relative', display: 'grid', gap: 12 }}>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr auto 1fr',
+                    gap: 10,
+                    alignItems: 'stretch',
+                  }}
+                >
+                  <div
+                    style={{
+                      borderRadius: 12,
+                      border: '1px solid rgba(125,211,252,0.34)',
+                      background: 'rgba(10,21,29,0.76)',
+                      padding: '10px 12px',
+                    }}
+                  >
+                    <div style={{ color: 'rgba(194,234,255,0.9)', fontSize: 11, letterSpacing: 0.9, textTransform: 'uppercase' }}>{duelLeft?.name || 'Left tribe'}</div>
+                    <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 16 }}>{duelLeftAgent}</div>
+                    <div style={{ marginTop: 6, color: 'rgba(183,224,245,0.86)', fontSize: 12 }}>
+                      {duelLeft?.size || 0} agents · {duelLeft?.infamy || 0} infamy
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      alignSelf: 'center',
+                      justifySelf: 'center',
+                      width: 58,
+                      height: 58,
+                      borderRadius: '50%',
+                      border: '1px solid rgba(226,182,111,0.42)',
+                      display: 'grid',
+                      placeItems: 'center',
+                      color: 'rgba(255,238,206,0.95)',
+                      fontWeight: 900,
+                      background: 'rgba(20,14,9,0.9)',
+                    }}
+                  >
+                    VS
+                  </div>
+                  <div
+                    style={{
+                      borderRadius: 12,
+                      border: '1px solid rgba(196,181,253,0.34)',
+                      background: 'rgba(21,14,32,0.76)',
+                      padding: '10px 12px',
+                      textAlign: 'right',
+                    }}
+                  >
+                    <div style={{ color: 'rgba(223,214,255,0.9)', fontSize: 11, letterSpacing: 0.9, textTransform: 'uppercase' }}>{duelRight?.name || 'Right tribe'}</div>
+                    <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 16 }}>{duelRightAgent}</div>
+                    <div style={{ marginTop: 6, color: 'rgba(227,214,255,0.86)', fontSize: 12 }}>
+                      {duelRight?.size || 0} agents · {duelRight?.infamy || 0} infamy
+                    </div>
+                  </div>
                 </div>
-                <div style={{ marginTop: 8, fontFamily: 'var(--font-display)', color: 'rgba(255,255,255,0.96)', fontSize: 'clamp(30px, 4.5vw, 52px)', lineHeight: 0.98 }}>
-                  {data.wyr.question}
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.1)', overflow: 'hidden' }}>
+                    <div style={{ width: `${duelLeftPct}%`, height: '100%', background: 'linear-gradient(90deg, rgba(125,211,252,0.8), rgba(147,197,253,0.95))' }} />
+                  </div>
+                  <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.1)', overflow: 'hidden' }}>
+                    <div style={{ width: `${duelRightPct}%`, height: '100%', background: 'linear-gradient(90deg, rgba(196,181,253,0.8), rgba(167,139,250,0.95))' }} />
+                  </div>
                 </div>
-                <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.68)', fontSize: 12 }}>
-                  Hover/click a choice to spotlight it. Keyboard: <strong>A</strong> or <strong>B</strong>.
+
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {JOUST_STAGE_ORDER.map((stage, index) => {
+                    const completed = stepIndex >= 0 && index <= stepIndex;
+                    const active = data.state === stage;
+                    return (
+                      <span
+                        key={`stage-${stage}`}
+                        style={{
+                          padding: '4px 9px',
+                          borderRadius: 999,
+                          border: active ? '1px solid rgba(226,182,111,0.75)' : '1px solid rgba(255,255,255,0.18)',
+                          background: completed ? 'rgba(226,182,111,0.2)' : 'rgba(255,255,255,0.06)',
+                          color: completed ? 'rgba(255,242,218,0.94)' : 'rgba(255,255,255,0.7)',
+                          fontSize: 11,
+                          fontWeight: 800,
+                          letterSpacing: 0.4,
+                        }}
+                      >
+                        {stageLabelMap[stage]}
+                      </span>
+                    );
+                  })}
+                </div>
+
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: 'rgba(255,235,198,0.78)', fontSize: 12, fontWeight: 800, letterSpacing: 1.1, textTransform: 'uppercase' }}>
+                    Central Would You Rather
+                  </div>
+                  <div style={{ marginTop: 8, fontFamily: 'var(--font-display)', color: 'rgba(255,255,255,0.96)', fontSize: 'clamp(30px, 4.5vw, 52px)', lineHeight: 0.98 }}>
+                    {data.wyr.question}
+                  </div>
+                  <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.68)', fontSize: 12 }}>
+                    Hover/click a choice to spotlight it. Keyboard: <strong>A</strong> or <strong>B</strong>.
+                  </div>
                 </div>
               </div>
 
@@ -2507,8 +2912,30 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
               ))}
             </div>
 
-            <div style={{ marginTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 12, color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>
-              Central WYR stage is shown above. Below are the round arguments by tribe.
+            <div style={{ marginTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 12 }}>
+              <div style={{ color: 'rgba(255,255,255,0.78)', fontSize: 12, fontWeight: 800 }}>Territory share after this round</div>
+              <div style={{ marginTop: 8, display: 'grid', gap: 7 }}>
+                {territoryShare.map((entry) => (
+                  <div key={`territory-${entry.id}`} style={{ display: 'grid', gap: 4 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
+                      <span style={{ color: 'rgba(255,255,255,0.85)' }}>
+                        {entry.name} · {entry.size} members
+                      </span>
+                      <span style={{ color: 'rgba(255,255,255,0.64)' }}>{entry.pct}%</span>
+                    </div>
+                    <div style={{ height: 7, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
+                      <div
+                        style={{
+                          width: `${entry.pct}%`,
+                          height: '100%',
+                          background: `linear-gradient(90deg, ${entry.color}, rgba(255,255,255,0.86))`,
+                          transition: 'width 320ms ease',
+                        }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div style={{ marginTop: 14, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 14 }}>
