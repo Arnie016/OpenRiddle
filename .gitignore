@@ -5,3 +5,4 @@ dist/
 data/
 *.sqlite
 .DS_Store
+.vercel

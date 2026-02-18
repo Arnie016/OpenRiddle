@@ -1,6 +1,27 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+
+let cachedSqliteCtor = null;
+
+function resolveSqliteCtor() {
+  if (cachedSqliteCtor) return cachedSqliteCtor;
+  try {
+    const builtin = require('node:sqlite');
+    if (builtin?.DatabaseSync) {
+      cachedSqliteCtor = builtin.DatabaseSync;
+      return cachedSqliteCtor;
+    }
+  } catch {
+    // Fallback for Node versions without node:sqlite.
+  }
+
+  const betterSqlite = require('better-sqlite3');
+  cachedSqliteCtor = betterSqlite.default || betterSqlite;
+  return cachedSqliteCtor;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -15,7 +36,8 @@ function safeJsonParse(s, fallback) {
 }
 
 export function openJoustDb(dbPath) {
-  const db = new DatabaseSync(dbPath);
+  const DatabaseCtor = resolveSqliteCtor();
+  const db = new DatabaseCtor(dbPath);
   db.exec('PRAGMA journal_mode=WAL;');
   db.exec('PRAGMA synchronous=NORMAL;');
   db.exec('PRAGMA foreign_keys=ON;');
@@ -46,6 +68,13 @@ export function openJoustDb(dbPath) {
       wins INTEGER NOT NULL,
       losses INTEGER NOT NULL,
       FOREIGN KEY (leader_agent_id) REFERENCES agents(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS tribe_profiles (
+      tribe_id TEXT PRIMARY KEY,
+      settings_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (tribe_id) REFERENCES tribes(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS tribe_members (
@@ -132,6 +161,12 @@ export function openJoustDb(dbPath) {
     ),
     getTribe: db.prepare(`SELECT * FROM tribes WHERE id = ?`),
     listTribes: db.prepare(`SELECT * FROM tribes ORDER BY infamy DESC, created_at DESC`),
+    getTribeProfile: db.prepare(`SELECT settings_json, updated_at FROM tribe_profiles WHERE tribe_id = ?`),
+    upsertTribeProfile: db.prepare(
+      `INSERT INTO tribe_profiles (tribe_id, settings_json, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(tribe_id) DO UPDATE SET settings_json=excluded.settings_json, updated_at=excluded.updated_at`,
+    ),
     listTribeMembers: db.prepare(
       `SELECT a.id, a.display_name, a.infamy
          FROM tribe_members tm
@@ -203,6 +238,34 @@ export function openJoustDb(dbPath) {
     };
   }
 
+  function normalizeTribeSettings(raw) {
+    const input = raw && typeof raw === 'object' ? raw : {};
+    const preferredStyles = Array.isArray(input.preferredStyles) ? input.preferredStyles.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 10) : [];
+    const requiredTags = Array.isArray(input.requiredTags) ? input.requiredTags.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 12) : [];
+    const objective = String(input.objective || '').trim().slice(0, 220);
+    const minInfamyRaw = Number(input.minInfamy);
+    const minInfamy = Number.isFinite(minInfamyRaw) ? Math.max(0, Math.min(5000, Math.round(minInfamyRaw))) : 0;
+    return {
+      objective,
+      openJoin: input.openJoin !== false,
+      minInfamy,
+      preferredStyles,
+      requiredTags,
+    };
+  }
+
+  function getTribeSettings(tribeId) {
+    const row = stmt.getTribeProfile.get(tribeId);
+    if (!row) return normalizeTribeSettings({});
+    return normalizeTribeSettings(safeJsonParse(row.settings_json, {}));
+  }
+
+  function setTribeSettings(tribeId, settings) {
+    const normalized = normalizeTribeSettings(settings);
+    stmt.upsertTribeProfile.run(tribeId, JSON.stringify(normalized), nowIso());
+    return normalized;
+  }
+
   function getAgentTribeId(agentId) {
     const row = stmt.getAgentTribe.get(agentId);
     return row?.tribe_id || null;
@@ -221,6 +284,7 @@ export function openJoustDb(dbPath) {
       const members = stmt.listTribeMembers.all(t.id).map((m) => ({ id: m.id, displayName: m.display_name, infamy: m.infamy }));
       return {
         ...t,
+        settings: getTribeSettings(t.id),
         memberCount: members.length,
         members,
       };
@@ -329,7 +393,12 @@ export function openJoustDb(dbPath) {
 
   function getTribe(tribeId) {
     const row = stmt.getTribe.get(tribeId);
-    return hydrateTribe(row);
+    const tribe = hydrateTribe(row);
+    if (!tribe) return null;
+    return {
+      ...tribe,
+      settings: getTribeSettings(tribe.id),
+    };
   }
 
   function getAgent(agentId) {
@@ -402,6 +471,8 @@ export function openJoustDb(dbPath) {
     listAgents,
     listTribes,
     listTribeMembers,
+    getTribeSettings,
+    setTribeSettings,
     createAgent,
     createTribe,
     addTribeMember,

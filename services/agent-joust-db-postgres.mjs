@@ -52,6 +52,22 @@ function hydrateTribe(row) {
   };
 }
 
+function normalizeTribeSettings(raw) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  const preferredStyles = Array.isArray(input.preferredStyles) ? input.preferredStyles.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 10) : [];
+  const requiredTags = Array.isArray(input.requiredTags) ? input.requiredTags.map((s) => String(s || '').trim()).filter(Boolean).slice(0, 12) : [];
+  const objective = String(input.objective || '').trim().slice(0, 220);
+  const minInfamyRaw = Number(input.minInfamy);
+  const minInfamy = Number.isFinite(minInfamyRaw) ? Math.max(0, Math.min(5000, Math.round(minInfamyRaw))) : 0;
+  return {
+    objective,
+    openJoin: input.openJoin !== false,
+    minInfamy,
+    preferredStyles,
+    requiredTags,
+  };
+}
+
 async function ensureSchema(pool) {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agents (
@@ -86,6 +102,12 @@ async function ensureSchema(pool) {
       role TEXT NOT NULL DEFAULT 'member',
       joined_at TEXT NOT NULL,
       PRIMARY KEY (tribe_id, agent_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS tribe_profiles (
+      tribe_id TEXT PRIMARY KEY REFERENCES tribes(id) ON DELETE CASCADE,
+      settings_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS jousts (
@@ -184,6 +206,12 @@ export async function openJoustPostgresStore({ connectionString }) {
     const tribeRows = (await pool.query(`SELECT * FROM tribes ORDER BY infamy DESC, created_at DESC`)).rows;
     if (tribeRows.length === 0) return [];
 
+    const profileRows = (await pool.query(`SELECT tribe_id, settings_json FROM tribe_profiles`)).rows;
+    const profileByTribe = new Map();
+    for (const row of profileRows) {
+      profileByTribe.set(row.tribe_id, normalizeTribeSettings(safeJsonParse(row.settings_json, {})));
+    }
+
     const memberRows = (
       await pool.query(`
         SELECT tm.tribe_id, a.id, a.display_name, a.infamy, a.created_at
@@ -203,7 +231,12 @@ export async function openJoustPostgresStore({ connectionString }) {
     return tribeRows.map((row) => {
       const tribe = hydrateTribe(row);
       const members = membersByTribe.get(tribe.id) || [];
-      return { ...tribe, memberCount: members.length, members };
+      return {
+        ...tribe,
+        settings: profileByTribe.get(tribe.id) || normalizeTribeSettings({}),
+        memberCount: members.length,
+        members,
+      };
     });
   }
 
@@ -407,7 +440,31 @@ export async function openJoustPostgresStore({ connectionString }) {
 
   async function getTribe(tribeId) {
     const row = (await pool.query(`SELECT * FROM tribes WHERE id = $1`, [tribeId])).rows[0];
-    return hydrateTribe(row);
+    const tribe = hydrateTribe(row);
+    if (!tribe) return null;
+    return {
+      ...tribe,
+      settings: await getTribeSettings(tribe.id),
+    };
+  }
+
+  async function getTribeSettings(tribeId) {
+    const row = (await pool.query(`SELECT settings_json FROM tribe_profiles WHERE tribe_id = $1`, [tribeId])).rows[0];
+    return normalizeTribeSettings(safeJsonParse(row?.settings_json, {}));
+  }
+
+  async function setTribeSettings(tribeId, settings) {
+    const normalized = normalizeTribeSettings(settings);
+    await pool.query(
+      `
+      INSERT INTO tribe_profiles (tribe_id, settings_json, updated_at)
+      VALUES ($1, $2::jsonb, $3)
+      ON CONFLICT (tribe_id)
+      DO UPDATE SET settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at
+    `,
+      [tribeId, JSON.stringify(normalized), nowIso()],
+    );
+    return normalized;
   }
 
   async function getAgent(agentId) {
@@ -523,6 +580,8 @@ export async function openJoustPostgresStore({ connectionString }) {
     listAgents,
     listTribes,
     listTribeMembers,
+    getTribeSettings,
+    setTribeSettings,
     createAgent,
     createTribe,
     addTribeMember,

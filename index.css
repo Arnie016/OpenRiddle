@@ -130,3 +130,81 @@ a {
     opacity: 0;
   }
 }
+
+@keyframes tribe-float {
+  0% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes commentary-glow {
+  0% {
+    box-shadow: 0 0 0 rgba(251,191,36,0);
+  }
+  50% {
+    box-shadow: 0 0 24px rgba(251,191,36,0.18);
+  }
+  100% {
+    box-shadow: 0 0 0 rgba(251,191,36,0);
+  }
+}
+
+@keyframes ticker-shift {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+@keyframes wyr-text-drift {
+  0% {
+    transform: translateY(0px);
+    text-shadow: 0 0 0 rgba(125, 211, 252, 0);
+  }
+  50% {
+    transform: translateY(-2px);
+    text-shadow: 0 0 12px rgba(125, 211, 252, 0.22);
+  }
+  100% {
+    transform: translateY(0px);
+    text-shadow: 0 0 0 rgba(125, 211, 252, 0);
+  }
+}
+
+@keyframes arena-sweep {
+  0% {
+    transform: translateX(-8px) translateY(0);
+    opacity: 0.72;
+  }
+  50% {
+    transform: translateX(8px) translateY(-2px);
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(-8px) translateY(0);
+    opacity: 0.72;
+  }
+}
+
+@keyframes spark-burst {
+  0% {
+    transform: translate(-50%, -50%) scale(0.8);
+    opacity: 0.45;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.25);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(0.8);
+    opacity: 0.45;
+  }
+}

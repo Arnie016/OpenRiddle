@@ -14,6 +14,8 @@ const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || '');
 const OPENAI_ANALYZER_MODEL = String(process.env.OPENAI_ANALYZER_MODEL || 'gpt-4.1-mini');
 const WINNER_DECIDER_MODE_RAW = String(process.env.JOUST_WINNER_DECIDER_MODE || 'rules').toLowerCase();
 const WINNER_DECIDER_MODE = WINNER_DECIDER_MODE_RAW === 'ai' ? 'ai' : 'rules';
+const VOTER_SCOPE_RAW = String(process.env.JOUST_VOTER_SCOPE || 'arena').toLowerCase();
+const VOTER_SCOPE = VOTER_SCOPE_RAW === 'all' ? 'all' : 'arena';
 
 const db = await openJoustStore({
   driver: STORE_DRIVER,
@@ -71,6 +73,57 @@ function clampNumber(value, min, max, fallback = min) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
+}
+
+function sanitizeTagList(input, maxItems = 10, maxLen = 24) {
+  if (!Array.isArray(input)) return [];
+  const unique = [];
+  const seen = new Set();
+  for (const value of input) {
+    const tag = clampText(String(value || '').trim(), maxLen).toLowerCase();
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    unique.push(tag);
+    if (unique.length >= maxItems) break;
+  }
+  return unique;
+}
+
+function normalizeTribeSettingsInput(raw) {
+  const input = raw && typeof raw === 'object' ? raw : {};
+  return {
+    objective: clampText(String(input.objective || ''), 220),
+    openJoin: input.openJoin !== false,
+    minInfamy: clampNumber(input.minInfamy ?? 0, 0, 5000, 0),
+    preferredStyles: sanitizeTagList(input.preferredStyles, 10, 24),
+    requiredTags: sanitizeTagList(input.requiredTags, 12, 24),
+  };
+}
+
+function evaluateJoinEligibility(agent, settings) {
+  if (!agent) return { ok: false, reason: 'agent not found' };
+  const rules = normalizeTribeSettingsInput(settings);
+  const tags = Array.isArray(agent.vibeTags) ? agent.vibeTags.map((tag) => String(tag || '').toLowerCase()) : [];
+
+  if ((agent.infamy || 0) < rules.minInfamy) {
+    return { ok: false, reason: `agent needs at least ${rules.minInfamy} infamy` };
+  }
+
+  if (rules.requiredTags.length > 0) {
+    const missing = rules.requiredTags.filter((tag) => !tags.includes(tag));
+    if (missing.length > 0) {
+      return { ok: false, reason: `agent missing required tags: ${missing.join(', ')}` };
+    }
+  }
+
+  if (!rules.openJoin && rules.preferredStyles.length > 0) {
+    const matchesStyle = rules.preferredStyles.some((style) => tags.includes(style));
+    if (!matchesStyle) {
+      return { ok: false, reason: `join requires one preferred style: ${rules.preferredStyles.join(', ')}` };
+    }
+  }
+
+  return { ok: true, reason: '' };
 }
 
 function safeJsonParse(raw, fallback = null) {
@@ -159,8 +212,9 @@ function getContextPayload() {
     rules: {
       round1: 'Entrance (<=240 chars, must include token).',
       round2: 'Pick A/B + pitch (<=420 chars).',
-      vote: 'All agents vote A/B.',
+      vote: 'Eligible agents vote A/B.',
       scoring: 'Winning option is by total votes; persuasion score = neutral votes + 2*snitch votes.',
+      voterScope: VOTER_SCOPE,
     },
     webhook: {
       headers: ['x-agent-id', 'x-agent-ts', 'x-agent-sig'],
@@ -172,6 +226,11 @@ function getContextPayload() {
       source: OPENAI_API_KEY ? 'openai+heuristic-fallback' : 'heuristic-only',
       model: OPENAI_ANALYZER_MODEL,
       winnerDeciderMode: WINNER_DECIDER_MODE,
+    },
+    tribes: {
+      settings: 'objective, openJoin, minInfamy, preferredStyles, requiredTags',
+      listEndpoint: '/api/tribes',
+      updateSettingsEndpoint: '/api/tribes/settings',
     },
     storage: {
       driver: db.driver || STORE_DRIVER,
@@ -198,7 +257,8 @@ function localAgentReply(agent, payload) {
     };
   }
   if (payload.type === 'wyr_vote') {
-    const vote = tag.includes('stoic') || tag.includes('builder') ? 'A' : 'B';
+    const ownChoice = payload?.tribeId ? payload?.transcript?.round2?.posts?.[payload.tribeId]?.choice : null;
+    const vote = ownChoice === 'A' || ownChoice === 'B' ? ownChoice : tag.includes('stoic') || tag.includes('builder') ? 'A' : 'B';
     return { vote };
   }
   return { message: '...' };
@@ -290,7 +350,34 @@ async function applyInfamy(joust, computed, forcedWinnerTribeId = null) {
     if (eligible.length > 0) {
       const best = Math.max(...eligible.map((tid) => tribeScores[tid].persuasionScore));
       const winners = eligible.filter((tid) => tribeScores[tid].persuasionScore === best);
-      winnerTribeId = winners.length === 1 ? winners[0] : undefined;
+      if (winners.length === 1) {
+        winnerTribeId = winners[0];
+      } else if (winners.length > 1) {
+        const winnerMeta = await Promise.all(
+          winners.map(async (tid) => {
+            const tribe = await db.getTribe(tid);
+            return { tribeId: tid, infamy: Number(tribe?.infamy || 0) };
+          }),
+        );
+        winnerMeta.sort((a, b) => b.infamy - a.infamy || a.tribeId.localeCompare(b.tribeId));
+        winnerTribeId = winnerMeta[0]?.tribeId;
+      }
+    }
+
+    if (!winnerTribeId) {
+      const ranked = await Promise.all(
+        joust.tribeIds.map(async (tid) => {
+          const tribe = await db.getTribe(tid);
+          return {
+            tribeId: tid,
+            persuasionScore: Number(tribeScores[tid]?.persuasionScore || 0),
+            infamy: Number(tribe?.infamy || 0),
+          };
+        }),
+      );
+      ranked.sort((a, b) => b.persuasionScore - a.persuasionScore || b.infamy - a.infamy || a.tribeId.localeCompare(b.tribeId));
+      winnerTribeId = ranked[0]?.tribeId;
+      winningOption = (winnerTribeId && tribeChoices[winnerTribeId]) || winningOption || null;
     }
   }
 
@@ -634,9 +721,12 @@ async function stepJoust(joust) {
   if (joust.state === 'vote') {
     const agents = await db.listAgents();
     for (const agent of agents) {
+      if (VOTER_SCOPE === 'arena' && agent.tribeId && !joust.tribeIds.includes(agent.tribeId)) {
+        continue;
+      }
       const already = joust.votes?.byAgent?.[agent.id];
       if (already) continue;
-      const payload = { type: 'wyr_vote', joustId: joust.id, wyr: joust.wyr, transcript: joust.rounds };
+      const payload = { type: 'wyr_vote', joustId: joust.id, tribeId: agent.tribeId || null, wyr: joust.wyr, transcript: joust.rounds };
       try {
         const out = await callAgent(agent, payload, Math.min(DEFAULT_TIMEOUT_MS, 4000));
         const v = String(out?.vote || '').toUpperCase();
@@ -920,6 +1010,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       const name = clampText(body?.name || 'Tribe', 50);
       const leaderAgentId = clampText(body?.leaderAgentId || '', 80);
+      const settings = normalizeTribeSettingsInput(body?.settings);
       const leader = await db.getAgent(leaderAgentId);
       if (!leader) return text(res, 400, 'leaderAgentId invalid');
 
@@ -929,7 +1020,21 @@ const server = http.createServer(async (req, res) => {
       const id = `tr_${randomUUID().slice(0, 10)}`;
       const color = clampText(body?.color || randomColor(id), 30);
       await db.createTribe({ id, name, color, leaderAgentId, createdAt: nowIso(), infamy: 0, wins: 0, losses: 0 });
-      return json(res, 200, { tribeId: id });
+      await db.setTribeSettings(id, settings);
+      return json(res, 200, { tribeId: id, settings });
+    }
+
+    if (req.method === 'POST' && path === '/api/tribes/settings') {
+      const body = await readJsonBody(req);
+      const tribeId = clampText(body?.tribeId || '', 80);
+      const agentId = clampText(body?.agentId || '', 80);
+      const tribe = await db.getTribe(tribeId);
+      if (!tribe) return text(res, 404, 'tribe not found');
+      if (!agentId) return text(res, 400, 'agentId required');
+      if (tribe.leaderAgentId !== agentId) return text(res, 403, 'only tribe leader can update settings');
+      const settings = normalizeTribeSettingsInput(body?.settings);
+      await db.setTribeSettings(tribeId, settings);
+      return json(res, 200, { ok: true, tribeId, settings });
     }
 
     if (req.method === 'POST' && path === '/api/tribes/add-member') {
@@ -940,6 +1045,9 @@ const server = http.createServer(async (req, res) => {
       const agent = await db.getAgent(agentId);
       if (!tribe) return text(res, 404, 'tribe not found');
       if (!agent) return text(res, 404, 'agent not found');
+
+      const eligibility = evaluateJoinEligibility(agent, tribe.settings);
+      if (!eligibility.ok) return text(res, 403, eligibility.reason);
 
       const existingTribeId = await db.getAgentTribeId(agentId);
       if (existingTribeId) return text(res, 400, `agent already in tribe ${existingTribeId}`);
@@ -953,6 +1061,7 @@ const server = http.createServer(async (req, res) => {
       const displayName = clampText(body?.displayName || `Agent-${randomUUID().slice(0, 4)}`, 60);
       const callbackUrl = clampText(body?.callbackUrl || 'local://stub', 400);
       const tribeName = clampText(body?.tribeName || `${displayName} Guild`, 60);
+      const homeSettings = normalizeTribeSettingsInput(body?.settings || { objective: body?.tribeObjective || '' });
       const vibeTags = Array.isArray(body?.vibeTags)
         ? body.vibeTags.map((x) => clampText(String(x), 20)).filter(Boolean).slice(0, 8)
         : [clampText(body?.vibe || 'witty', 20)].filter(Boolean);
@@ -976,6 +1085,7 @@ const server = http.createServer(async (req, res) => {
         wins: 0,
         losses: 0,
       });
+      await db.setTribeSettings(homeTribeId, homeSettings);
 
       let rivalTribeId = null;
       const rivals = (await db.listTribes()).filter((t) => t.id !== homeTribeId);
@@ -1005,6 +1115,15 @@ const server = http.createServer(async (req, res) => {
           wins: 0,
           losses: 0,
         });
+        await db.setTribeSettings(
+          rivalTribeId,
+          normalizeTribeSettingsInput({
+            objective: 'Protect rank by forcing risky prompts.',
+            openJoin: true,
+            minInfamy: 90,
+            preferredStyles: ['tactical'],
+          }),
+        );
       }
 
       const seededWyr = randomWyrPrompt();
