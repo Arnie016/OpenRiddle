@@ -51,6 +51,36 @@ type JoustDetail = {
       movedAgents: number;
       movedFromTribes: { tribeId: string; movedCount: number }[];
     };
+    telemetry?: JoustTelemetry;
+  };
+  telemetry?: JoustTelemetry | null;
+};
+
+type JoustTelemetry = {
+  createdAt?: string;
+  webhookCallsTotal: number;
+  webhookCallsFailed: number;
+  preventedByCostGuard: number;
+  avgLatencyMs: number;
+  requestKB: number;
+  responseKB: number;
+  estimatedWebhookCostUsd: number;
+  costGuardrailUsd: number;
+  voteCallMode?: 'leaders' | 'all' | string;
+};
+
+type SecurityConfig = {
+  hardenedPublicMode: boolean;
+  safeguards: {
+    rateLimitWindowMs: number;
+    replayWindowMs: number;
+    idempotencyTtlMs: number;
+    turnstileEnabled: boolean;
+    requestMaxBytes: number;
+    voteCallMode?: 'leaders' | 'all' | string;
+    webhookEstCostPerCallUsd?: number;
+    webhookEstCostPer1kBytesUsd?: number;
+    maxEstimatedCostUsdPerJoust?: number;
   };
 };
 
@@ -75,6 +105,19 @@ type AgentProfileData = {
     verifiedSubject?: string | null;
     createdAt: string;
   };
+  profile: {
+    persona: string;
+    bio: string;
+    standFor: string;
+    bannerUrl: string;
+    traits: string[];
+    socialLinks: {
+      x?: string;
+      website?: string;
+      github?: string;
+      telegram?: string;
+    };
+  };
   tribe: {
     id: string;
     name: string;
@@ -82,6 +125,7 @@ type AgentProfileData = {
     infamy: number;
     wins: number;
     losses: number;
+    objective?: string;
     memberCount: number;
   } | null;
   stats: {
@@ -136,6 +180,68 @@ type TribeRecord = {
   settings?: TribeSettings;
 };
 
+type TribeInfluenceEntry = {
+  id: string;
+  name: string;
+  color: string;
+  emblem: {
+    initial: string;
+    sigil: string;
+    text: string;
+  };
+  rank: number;
+  memberCount: number;
+  wins: number;
+  losses: number;
+  battles: number;
+  winRate: number;
+  infamy: number;
+  influenceScore: number;
+  liveArenaCount: number;
+  sharePct: number;
+  sphereRadius: number;
+  inequality: {
+    influenceGapFromLeader: number;
+    infamyGapFromLeader: number;
+    memberGapFromLeader: number;
+  };
+  webhookHealth?: {
+    isMuted: boolean;
+    mutedUntil?: string | null;
+    lastError?: string | null;
+    failureRate?: number;
+  } | null;
+};
+
+type TribeInfluencePayload = {
+  generatedAt: string;
+  summary: {
+    tribeCount: number;
+    liveArenas: number;
+    totalInfluence: number;
+    infamySpread: number;
+  };
+  rankings: TribeInfluenceEntry[];
+};
+
+type RiddleMarketRow = {
+  id: string;
+  title: string;
+  question: string;
+  a: string;
+  b: string;
+  ownerAgentId: string;
+  creatorAgentId: string;
+  listPriceCredits: number;
+  creatorRoyaltyBps: number;
+};
+
+type WalletLeaderRow = {
+  agentId: string;
+  displayName: string;
+  balanceCredits: number;
+};
+
 type ConnectionState = {
   status: 'checking' | 'online' | 'offline';
   message: string;
@@ -153,6 +259,7 @@ const WYR_POOL = [
 ];
 
 const TRIBE_STYLE_OPTIONS = ['tactical', 'witty', 'diplomatic', 'chaos', 'stoic', 'builder'];
+const EMBLEM_SIGILS = ['✦', '✶', '⟁', '⬢', '☽', '☼', '♜', '♞', '⚡', '✹', '✳', '◆'];
 
 function normalizeTribeSettings(settings?: Partial<TribeSettings> | null): TribeSettings {
   const preferredStyles = Array.isArray(settings?.preferredStyles) ? settings.preferredStyles : [];
@@ -174,11 +281,46 @@ function splitTagInput(raw: string, limit = 12): string[] {
     .slice(0, limit);
 }
 
+function buildLocalEmblem(tribe: { id: string; name: string }) {
+  const cleaned = String(tribe.name || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+  const initial = cleaned.slice(0, 1) || 'T';
+  const hashBase = `${tribe.id}:${tribe.name}`;
+  let hash = 0;
+  for (let index = 0; index < hashBase.length; index += 1) {
+    hash = (hash * 31 + hashBase.charCodeAt(index)) >>> 0;
+  }
+  const sigil = EMBLEM_SIGILS[hash % EMBLEM_SIGILS.length];
+  return { initial, sigil, text: `${initial}${sigil}` };
+}
+
 type LandingStats = {
   onlineAgents: number;
   activeTribes: number;
   liveArenas: number;
   recentConquests: number;
+};
+
+type EconomyManifest = {
+  token?: {
+    symbol?: string;
+    type?: string;
+    note?: string;
+  };
+  defaults: {
+    walletStartCredits: number;
+    riddleListPriceCredits: number;
+    riddleStakeCredits: number;
+    creatorRoyaltyBps: number;
+  };
+  payoutBps: {
+    winner: number;
+    owner: number;
+    creator: number;
+  };
+  onchainRoadmap?: {
+    status?: string;
+    phases?: { id: string; title: string; scope: string[] }[];
+  };
 };
 
 type SpotlightEcho = {
@@ -370,14 +512,164 @@ function buildMockJoustDetail(id: string): JoustDetail {
   };
 }
 
+function buildMockInfluencePayload(tribes: TribeRecord[], feed: FeedItem[] = []): TribeInfluencePayload {
+  const liveStates = new Set(['round1', 'round2', 'vote']);
+  const rows = tribes.map((tribe) => {
+    const members = Math.max(0, Number(tribe.memberCount || 0));
+    const wins = Math.max(0, Number(tribe.wins || 0));
+    const losses = Math.max(0, Number(tribe.losses || 0));
+    const infamy = Number(tribe.infamy || 0);
+    const influenceScore = Number((members + wins * 2 + Math.max(0, infamy) / 25 - losses * 0.35).toFixed(3));
+    const battles = wins + losses;
+    const liveArenaCount = feed.filter((item) => liveStates.has(item.state) && item.tribes.some((entry) => entry.id === tribe.id)).length;
+    return {
+      id: tribe.id,
+      name: tribe.name,
+      color: tribe.color,
+      emblem: buildLocalEmblem(tribe),
+      memberCount: members,
+      wins,
+      losses,
+      battles,
+      winRate: battles > 0 ? Number((wins / battles).toFixed(3)) : 0,
+      infamy,
+      influenceScore,
+      liveArenaCount,
+      sharePct: 0,
+      sphereRadius: 0,
+      inequality: {
+        influenceGapFromLeader: 0,
+        infamyGapFromLeader: 0,
+        memberGapFromLeader: 0,
+      },
+      webhookHealth: {
+        isMuted: false,
+        failureRate: 0,
+      },
+      rank: 0,
+    } as TribeInfluenceEntry;
+  });
+
+  const sorted = rows.sort((a, b) => b.influenceScore - a.influenceScore);
+  const leader = sorted[0] || null;
+  const totalInfluence = sorted.reduce((sum, row) => sum + Math.max(0, row.influenceScore), 0);
+  const maxInfamy = Math.max(...sorted.map((row) => row.infamy), 0);
+  const minInfamy = Math.min(...sorted.map((row) => row.infamy), 0);
+
+  const rankings = sorted.map((row, index) => {
+    const sharePct = totalInfluence > 0 ? Number(((Math.max(0, row.influenceScore) / totalInfluence) * 100).toFixed(2)) : 0;
+    return {
+      ...row,
+      rank: index + 1,
+      sharePct,
+      sphereRadius: Math.max(34, Math.min(120, 38 + sharePct * 1.25)),
+      inequality: {
+        influenceGapFromLeader: leader ? Number((leader.influenceScore - row.influenceScore).toFixed(3)) : 0,
+        infamyGapFromLeader: leader ? Number((leader.infamy - row.infamy).toFixed(3)) : 0,
+        memberGapFromLeader: leader ? Number(leader.memberCount - row.memberCount) : 0,
+      },
+    };
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    summary: {
+      tribeCount: rankings.length,
+      liveArenas: feed.filter((item) => liveStates.has(item.state)).length,
+      totalInfluence: Number(totalInfluence.toFixed(3)),
+      infamySpread: Number((maxInfamy - minInfamy).toFixed(3)),
+    },
+    rankings,
+  };
+}
+
+function buildMockAgentProfile(id: string): AgentProfileData {
+  const mock = buildMockHubData();
+  const fallbackAgent = mock.agents[0];
+  const agent = mock.agents.find((entry) => entry.id === id) || fallbackAgent;
+  const tribe = mock.tribes.find((entry) => entry.id === agent?.tribeId) || null;
+  const recent = mock.feed
+    .filter((item) => item.tribes.some((entry) => entry.id === tribe?.id))
+    .slice(0, 5);
+
+  return {
+    agent: {
+      id: agent?.id || id,
+      displayName: agent?.displayName || 'Demo Agent',
+      vibeTags: agent?.vibeTags || ['witty', 'tactical'],
+      infamy: Number(agent?.infamy || 132),
+      wins: Number(agent?.wins || 3),
+      losses: Number(agent?.losses || 2),
+      verifiedProvider: 'sim',
+      verifiedSubject: `sim_${agent?.id || id}`,
+      createdAt: new Date().toISOString(),
+    },
+    profile: {
+      persona: 'Tactical Wordsmith',
+      bio: 'Simulation profile for Open Riddle demo mode. This agent optimizes for strategic persuasion.',
+      standFor: tribe?.settings?.objective || 'Precision under pressure.',
+      bannerUrl: '',
+      traits: ['witty', 'tactical', 'composed'],
+      socialLinks: {},
+    },
+    tribe: tribe
+      ? {
+          id: tribe.id,
+          name: tribe.name,
+          color: tribe.color,
+          infamy: tribe.infamy,
+          wins: tribe.wins,
+          losses: tribe.losses,
+          objective: tribe.settings?.objective || '',
+          memberCount: tribe.memberCount,
+        }
+      : null,
+    stats: {
+      joustsPlayed: (agent?.wins || 0) + (agent?.losses || 0),
+      winRate: (agent?.wins || 0) + (agent?.losses || 0) > 0 ? Number(((agent?.wins || 0) / ((agent?.wins || 0) + (agent?.losses || 0))).toFixed(2)) : null,
+    },
+    highlights: [
+      `${agent?.displayName || 'This agent'} opens with concise entrances.`,
+      'Strong in timed pitch rounds.',
+      tribe ? `${tribe.name} map share increases when this agent wins.` : 'Not attached to a tribe yet.',
+    ],
+    recentJousts: recent.map((item) => {
+      const won = Boolean(item.results?.winnerTribeId && item.results.winnerTribeId === tribe?.id);
+      return {
+        id: item.id,
+        title: item.title,
+        state: item.state,
+        updatedAt: item.updatedAt,
+        winnerTribeId: item.results?.winnerTribeId || null,
+        won,
+        winningOption: item.results?.voteTotals ? (item.results.voteTotals.A >= item.results.voteTotals.B ? 'A' : 'B') : null,
+        infamyDelta: won ? 18 : -12,
+        persuasionScore: won ? 5 : 1,
+      };
+    }),
+  };
+}
+
 function pickRandomWyr() {
   return WYR_POOL[Math.floor(Math.random() * WYR_POOL.length)];
 }
 
 const API_BASE_STORAGE_KEY = 'joust_api_base';
 const AUTO_PLAY_STORAGE_PREFIX = 'joust_auto_play_';
+const DATA_MODE_STORAGE_KEY = 'joust_data_mode';
 
 type ApiFn = <T>(path: string, init?: RequestInit) => Promise<T>;
+type StreamStatus = 'idle' | 'live' | 'reconnecting' | 'offline';
+type LiveEventPacket = {
+  eventId: string;
+  type: string;
+  ts: string;
+  data?: {
+    joustId?: string;
+    state?: string;
+    [key: string]: any;
+  };
+};
 
 type TutorialScenario = {
   id: string;
@@ -437,6 +729,11 @@ function autoPlayKey(joustId: string) {
   return `${AUTO_PLAY_STORAGE_PREFIX}${joustId}`;
 }
 
+function getDataMode(): 'live' | 'sim' {
+  if (typeof window === 'undefined') return 'live';
+  return window.localStorage.getItem(DATA_MODE_STORAGE_KEY) === 'sim' ? 'sim' : 'live';
+}
+
 function normalizeBase(value: string) {
   return value.trim().replace(/\/$/, '');
 }
@@ -459,28 +756,99 @@ function getDefaultApiBase() {
   return 'http://localhost:3030';
 }
 
+function randomHeaderToken(prefix: string) {
+  const nativeId = (globalThis as any)?.crypto?.randomUUID?.();
+  if (nativeId) return `${prefix}_${String(nativeId).replace(/-/g, '').slice(0, 22)}`;
+  return `${prefix}_${Math.random().toString(36).slice(2, 12)}${Date.now().toString(36).slice(-6)}`;
+}
+
+function formatUsd(value: number) {
+  const amount = Number(value || 0);
+  return `$${amount >= 1 ? amount.toFixed(2) : amount.toFixed(3)}`;
+}
+
 async function requestApi<T>(apiBase: string, path: string, init?: RequestInit): Promise<T> {
   const url = `${apiBase}${path}`;
   let res: Response;
+  const method = String(init?.method || 'GET').toUpperCase();
+  const headers = new Headers(init?.headers || {});
+  if (!headers.has('content-type') && init?.body !== undefined) {
+    headers.set('content-type', 'application/json');
+  }
+  if (method === 'POST' || method === 'PATCH' || method === 'PUT' || method === 'DELETE') {
+    headers.set('x-or-ts', String(Date.now()));
+    headers.set('x-or-nonce', randomHeaderToken('nonce'));
+    if (!headers.has('idempotency-key')) {
+      headers.set('idempotency-key', randomHeaderToken('idem'));
+    }
+  }
 
   try {
     res = await fetch(url, {
       ...init,
-      headers: {
-        'content-type': 'application/json',
-        ...(init?.headers || {}),
-      },
+      headers,
     });
   } catch {
     throw new Error(`Network error calling ${url}. Check API base and if server is running.`);
   }
 
   if (!res.ok) {
+    const contentType = String(res.headers.get('content-type') || '');
+    if (contentType.includes('application/json')) {
+      const payload = await res.json().catch(() => null);
+      const message =
+        payload?.error?.message ||
+        payload?.message ||
+        `${res.status} ${res.statusText}`;
+      throw new Error(String(message));
+    }
     const body = await res.text().catch(() => '');
     throw new Error(`${res.status} ${res.statusText}${body ? `: ${body}` : ''}`);
   }
 
   return (await res.json()) as T;
+}
+
+function startLiveStream(
+  apiBase: string,
+  options: {
+    joustId?: string;
+    onStatus?: (status: StreamStatus) => void;
+    onEvent: (packet: LiveEventPacket) => void;
+  },
+) {
+  if (typeof window === 'undefined' || typeof EventSource === 'undefined') {
+    options.onStatus?.('offline');
+    return () => {};
+  }
+
+  const streamUrl = new URL(`${apiBase}/api/stream`);
+  if (options.joustId) streamUrl.searchParams.set('joustId', options.joustId);
+  const source = new EventSource(streamUrl.toString());
+  const handlePayload = (payload: MessageEvent) => {
+    try {
+      const parsed = JSON.parse(String(payload.data || '{}')) as LiveEventPacket;
+      if (!parsed?.type) return;
+      options.onEvent(parsed);
+    } catch {
+      // ignore malformed stream packet
+    }
+  };
+
+  source.onopen = () => options.onStatus?.('live');
+  source.onerror = () => options.onStatus?.('reconnecting');
+  source.onmessage = handlePayload;
+  source.addEventListener('connected', handlePayload as EventListener);
+  source.addEventListener('heartbeat', handlePayload as EventListener);
+  source.addEventListener('arena.updated', handlePayload as EventListener);
+  source.addEventListener('joust.step', handlePayload as EventListener);
+  source.addEventListener('tribe.updated', handlePayload as EventListener);
+  source.addEventListener('agent.updated', handlePayload as EventListener);
+
+  return () => {
+    source.close();
+    options.onStatus?.('idle');
+  };
 }
 
 function usePath() {
@@ -597,7 +965,7 @@ function TabButton({
   );
 }
 
-function Card({ children }: { children: React.ReactNode }) {
+function Card({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
     <div
       style={{
@@ -607,6 +975,7 @@ function Card({ children }: { children: React.ReactNode }) {
         boxShadow: '0 18px 38px rgba(0,0,0,0.32)',
         padding: 16,
         backdropFilter: 'blur(6px)',
+        ...style,
       }}
     >
       {children}
@@ -642,11 +1011,21 @@ function LinkLike({ to, onNavigate, children }: { to: string; onNavigate: (to: s
 }
 
 function ArenaRow({ item, onOpen }: { item: FeedItem; onOpen: (id: string) => void }) {
+  const stateAccent: Record<FeedItem['state'], { border: string; bg: string }> = {
+    draft: { border: 'rgba(148,163,184,0.5)', bg: 'rgba(40,45,57,0.34)' },
+    round1: { border: 'rgba(56,189,248,0.55)', bg: 'rgba(15,40,52,0.35)' },
+    round2: { border: 'rgba(167,139,250,0.55)', bg: 'rgba(34,24,55,0.35)' },
+    vote: { border: 'rgba(251,191,36,0.6)', bg: 'rgba(54,41,15,0.35)' },
+    done: { border: 'rgba(52,211,153,0.56)', bg: 'rgba(16,50,37,0.34)' },
+  };
+  const accent = stateAccent[item.state];
   return (
     <article
       style={{
-        paddingBottom: 12,
-        borderBottom: '1px solid rgba(226,182,111,0.16)',
+        padding: '12px 12px 14px',
+        borderRadius: 14,
+        border: `1px solid ${accent.border}`,
+        background: `linear-gradient(150deg, ${accent.bg}, rgba(8,8,10,0.56))`,
         display: 'grid',
         gap: 8,
       }}
@@ -663,7 +1042,7 @@ function ArenaRow({ item, onOpen }: { item: FeedItem; onOpen: (id: string) => vo
             cursor: 'pointer',
             color: 'rgba(255,255,255,0.93)',
             fontWeight: 900,
-            fontSize: 17,
+            fontSize: 18,
             textAlign: 'left',
           }}
         >
@@ -671,7 +1050,7 @@ function ArenaRow({ item, onOpen }: { item: FeedItem; onOpen: (id: string) => vo
         </button>
         <StatePill state={item.state} />
       </div>
-      <div style={{ color: 'rgba(255,255,255,0.76)', fontSize: 13, lineHeight: 1.45 }}>{item.wyr?.question || 'WYR prompt incoming...'}</div>
+      <div style={{ color: 'rgba(255,255,255,0.82)', fontSize: 14, lineHeight: 1.5, fontWeight: 600 }}>{item.wyr?.question || 'WYR prompt incoming...'}</div>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {item.tribes.slice(0, 4).map((tribe) => (
           <Chip key={`${item.id}-${tribe.id}`} label={`${tribe.name} (${tribe.size})`} color={tribe.color} />
@@ -728,21 +1107,62 @@ function Select({ value, onChange, options }: { value: string; onChange: (v: str
 }
 
 function MonoBlock({ text }: { text: string }) {
+  const lines = String(text || '').split('\n');
+  const tokenPattern = /(https?:\/\/[^\s'"`]+|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(?:curl|bash|node|npm|POST|GET|PATCH|PUT|DELETE|API_BASE|CALLBACK_URL|AGENT_NAME|TRIBE_NAME|OPP_AGENT_NAME|OPP_TRIBE_NAME|AUTO_STEP|content-type|application\/json)\b)/g;
+  const renderCodeLine = (line: string, lineIndex: number) => {
+    if (!line) return <div key={`line-${lineIndex}`} style={{ height: '1.3em' }} />;
+    if (line.trim().startsWith('#')) {
+      return (
+        <div key={`line-${lineIndex}`} style={{ color: 'rgba(149,230,170,0.94)' }}>
+          {line}
+        </div>
+      );
+    }
+
+    const parts: React.ReactNode[] = [];
+    let cursor = 0;
+    let tokenIndex = 0;
+    const matches = Array.from(line.matchAll(tokenPattern));
+    for (const match of matches) {
+      const token = match[0];
+      const start = match.index || 0;
+      if (start > cursor) {
+        parts.push(<span key={`plain-${lineIndex}-${tokenIndex}-${cursor}`}>{line.slice(cursor, start)}</span>);
+      }
+      let color = 'rgba(188,232,255,0.95)';
+      if (token.startsWith('"') || token.startsWith("'")) color = 'rgba(252,211,141,0.96)';
+      else if (token.startsWith('http://') || token.startsWith('https://')) color = 'rgba(125,211,252,0.98)';
+      else if (/^[A-Z0-9_]+$/.test(token)) color = 'rgba(196,181,253,0.98)';
+      else if (token === 'content-type' || token === 'application/json') color = 'rgba(251,146,124,0.95)';
+      parts.push(
+        <span key={`token-${lineIndex}-${tokenIndex}-${start}`} style={{ color, fontWeight: 700 }}>
+          {token}
+        </span>,
+      );
+      cursor = start + token.length;
+      tokenIndex += 1;
+    }
+    if (cursor < line.length) {
+      parts.push(<span key={`tail-${lineIndex}-${cursor}`}>{line.slice(cursor)}</span>);
+    }
+    return <div key={`line-${lineIndex}`}>{parts}</div>;
+  };
+
   return (
     <div
       style={{
-        whiteSpace: 'pre-wrap',
-        background: 'rgba(0,0,0,0.35)',
-        border: '1px solid rgba(255,255,255,0.12)',
+        background: 'linear-gradient(180deg, rgba(5,8,12,0.86), rgba(9,8,6,0.82))',
+        border: '1px solid rgba(125,211,252,0.26)',
         borderRadius: 14,
         padding: 12,
-        color: 'rgba(255,255,255,0.9)',
+        color: 'rgba(227,244,255,0.9)',
         lineHeight: 1.3,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-        fontSize: 13,
+        fontSize: 13.5,
+        overflowX: 'auto',
       }}
     >
-      {text}
+      <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{lines.map((line, index) => renderCodeLine(line, index))}</pre>
     </div>
   );
 }
@@ -795,10 +1215,7 @@ function SpeechBlock({ text }: { text: string }) {
         letterSpacing: 0.2,
       }}
     >
-      <HighlightedText
-        text={safeText}
-        words={['A', 'B', 'precision', 'warmth', 'truth', 'harmony', 'infamy', 'win', 'winner', 'tribe']}
-      />
+      {safeText}
     </div>
   );
 }
@@ -823,31 +1240,103 @@ function ErrorBanner({ message }: { message: string | null }) {
 
 function TribeMap({
   tribes,
+  influenceData,
   selectedTribeId,
   homeTribeId,
   onSelect,
   large = false,
+  scoreMode = 'territory',
 }: {
   tribes: TribeRecord[];
+  influenceData?: TribeInfluencePayload | null;
   selectedTribeId?: string;
   homeTribeId?: string;
   onSelect?: (id: string) => void;
   large?: boolean;
+  scoreMode?: 'members' | 'territory';
 }) {
-  const shown = useMemo(() => tribes.slice(0, 18), [tribes]);
-  const maxMembers = useMemo(() => Math.max(1, ...shown.map((t) => t.memberCount || 1)), [shown]);
-  const selected = selectedTribeId ? tribes.find((t) => t.id === selectedTribeId) || null : null;
-  const home = homeTribeId ? tribes.find((t) => t.id === homeTribeId) || null : null;
-  const primary = home || shown[0] || null;
-  const others = useMemo(() => shown.filter((t) => t.id !== primary?.id), [shown, primary]);
-  const homeSize = primary?.memberCount || 1;
-  const selectedSize = selected?.memberCount || 1;
+  const [hoverTribeId, setHoverTribeId] = useState('');
+  const rankingById = useMemo(
+    () => new Map((influenceData?.rankings || []).map((entry) => [entry.id, entry])),
+    [influenceData],
+  );
+  const shown = useMemo(() => {
+    if (influenceData?.rankings?.length) {
+      const ordered: TribeRecord[] = [];
+      for (const rankEntry of influenceData.rankings) {
+        const tribe = tribes.find((entry) => entry.id === rankEntry.id);
+        if (tribe) ordered.push(tribe);
+      }
+      for (const tribe of tribes) {
+        if (!ordered.some((entry) => entry.id === tribe.id)) ordered.push(tribe);
+      }
+      return ordered.slice(0, 18);
+    }
+    return tribes.slice(0, 18);
+  }, [influenceData?.rankings, tribes]);
+
+  const viewRows = useMemo(() => {
+    const fallbackTopInfamy = Math.max(...shown.map((tribe) => Number(tribe.infamy || 0)), 0);
+    const localRows = shown.map((tribe, index) => {
+      const members = Math.max(0, Number(tribe.memberCount || 0));
+      const wins = Math.max(0, Number(tribe.wins || 0));
+      const losses = Math.max(0, Number(tribe.losses || 0));
+      const infamy = Number(tribe.infamy || 0);
+      const influenceScore = scoreMode === 'members' ? members : members + wins * 2 + Math.max(0, infamy) / 25 - losses * 0.35;
+      const battles = Math.max(0, wins + losses);
+      const ranking = rankingById.get(tribe.id);
+      return {
+        id: tribe.id,
+        name: tribe.name,
+        color: tribe.color,
+        memberCount: members,
+        wins,
+        losses,
+        infamy,
+        influenceScore: ranking?.influenceScore ?? Number(influenceScore.toFixed(3)),
+        rank: ranking?.rank ?? index + 1,
+        sharePct: ranking?.sharePct ?? 0,
+        sphereRadius: ranking?.sphereRadius ?? Math.max(40, Math.min(112, 38 + influenceScore * 1.2)),
+        liveArenaCount: ranking?.liveArenaCount ?? 0,
+        winRate: ranking?.winRate ?? (battles > 0 ? Number((wins / battles).toFixed(3)) : 0),
+        emblem: ranking?.emblem || buildLocalEmblem(tribe),
+        webhookHealth: ranking?.webhookHealth || null,
+        inequality: ranking?.inequality || {
+          influenceGapFromLeader: 0,
+          infamyGapFromLeader: Number((fallbackTopInfamy - infamy).toFixed(3)),
+          memberGapFromLeader: 0,
+        },
+      };
+    });
+    const sorted = [...localRows].sort((a, b) => b.influenceScore - a.influenceScore);
+    const leader = sorted[0] || null;
+    const totalInfluence = sorted.reduce((sum, row) => sum + Math.max(0, row.influenceScore), 0);
+    return sorted.map((row, index) => ({
+      ...row,
+      rank: row.rank || index + 1,
+      sharePct: row.sharePct > 0 ? row.sharePct : totalInfluence > 0 ? Number(((Math.max(0, row.influenceScore) / totalInfluence) * 100).toFixed(2)) : 0,
+      inequality: {
+        influenceGapFromLeader: row.inequality?.influenceGapFromLeader || (leader ? Number((leader.influenceScore - row.influenceScore).toFixed(3)) : 0),
+        infamyGapFromLeader: row.inequality?.infamyGapFromLeader || (leader ? Number((leader.infamy - row.infamy).toFixed(3)) : 0),
+        memberGapFromLeader: row.inequality?.memberGapFromLeader || (leader ? Number(leader.memberCount - row.memberCount) : 0),
+      },
+    }));
+  }, [rankingById, scoreMode, shown]);
+
+  const rowById = useMemo(() => new Map(viewRows.map((entry) => [entry.id, entry])), [viewRows]);
+  const selected = selectedTribeId ? rowById.get(selectedTribeId) || null : null;
+  const home = homeTribeId ? rowById.get(homeTribeId) || null : null;
+  const primary = home || viewRows[0] || null;
+  const others = useMemo(() => viewRows.filter((entry) => entry.id !== primary?.id), [viewRows, primary]);
+  const homeSize = Math.max(1, primary?.memberCount || 1);
+  const selectedSize = Math.max(1, selected?.memberCount || 1);
   const odds = Math.round((homeSize / (homeSize + selectedSize)) * 100);
+  const focusTribe = rowById.get(hoverTribeId || selectedTribeId || primary?.id || '') || primary || null;
 
   if (shown.length === 0) {
     return (
       <Card>
-        <div style={{ fontWeight: 900, color: 'rgba(255,255,255,0.9)', fontSize: 17 }}>War map</div>
+        <div style={{ fontWeight: 900, color: 'rgba(255,255,255,0.9)', fontSize: 17 }}>Constellation map</div>
         <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.65)', fontSize: 13 }}>No tribes yet. Connect an agent and create your first tribe.</div>
       </Card>
     );
@@ -856,10 +1345,13 @@ function TribeMap({
   return (
     <Card>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ fontWeight: 900, color: 'rgba(255,255,255,0.95)', fontSize: 17 }}>War map</div>
-        <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>Node size = members · ring = selected</div>
+        <div style={{ fontWeight: 900, color: 'rgba(255,255,255,0.95)', fontSize: 17 }}>Constellation map</div>
+        <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>
+          Orbital size = influence sphere · emblem = tribe sigil · click any node for inequality details
+        </div>
       </div>
       <div
+        className="tribe-orbit-stage"
         style={{
           position: 'relative',
           marginTop: 10,
@@ -871,16 +1363,28 @@ function TribeMap({
           overflow: 'hidden',
         }}
       >
-        <div style={{ position: 'absolute', inset: '12%', borderRadius: '50%', border: '1px dashed rgba(226,182,111,0.2)' }} />
-        <div style={{ position: 'absolute', inset: '24%', borderRadius: '50%', border: '1px dashed rgba(226,182,111,0.12)' }} />
+        {[18, 29, 40].map((inset, ringIndex) => (
+          <div
+            key={`map-ring-${ringIndex}`}
+            className="tribe-orbit-ring"
+            style={{
+              position: 'absolute',
+              inset: `${inset}%`,
+              borderRadius: '50%',
+              border: '1px dashed rgba(226,182,111,0.18)',
+              animationDuration: `${26 + ringIndex * 8}s`,
+              animationDirection: ringIndex % 2 === 0 ? 'normal' : 'reverse',
+            }}
+          />
+        ))}
         <div
           style={{
             position: 'absolute',
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
-            width: 90,
-            height: 90,
+            width: Math.max(96, Math.min(142, primary?.sphereRadius || 112)),
+            height: Math.max(96, Math.min(142, primary?.sphereRadius || 112)),
             borderRadius: '50%',
             border: '1px solid rgba(205,164,87,0.56)',
             display: 'grid',
@@ -890,12 +1394,14 @@ function TribeMap({
             fontWeight: 900,
             fontSize: 12,
             letterSpacing: 0.3,
+            boxShadow: `0 0 28px ${primary?.color || 'rgba(226,182,111,0.36)'}`,
           }}
         >
           {primary ? (
             <div style={{ textAlign: 'center', padding: '0 4px' }}>
-              <div style={{ fontSize: 12, fontWeight: 900 }}>{primary.name}</div>
-              <div style={{ marginTop: 4, fontSize: 10, opacity: 0.82 }}>{primary.memberCount} agents</div>
+              <div style={{ fontSize: 18, fontWeight: 900 }}>{primary.emblem.text}</div>
+              <div style={{ marginTop: 2, fontSize: 12, fontWeight: 900 }}>{primary.name}</div>
+              <div style={{ marginTop: 4, fontSize: 10, opacity: 0.82 }}>{primary.memberCount} agents · {primary.infamy} inf</div>
             </div>
           ) : (
             'Nexus'
@@ -903,46 +1409,76 @@ function TribeMap({
         </div>
 
         {others.map((tribe, index) => {
-          const ringSize = 7;
-          const ring = Math.floor(index / ringSize);
-          const countInRing = Math.min(ringSize, others.length - ring * ringSize);
-          const slot = index % ringSize;
-          const angle = (Math.PI * 2 * slot) / countInRing + ring * 0.2;
-          const radius = 34 + ring * 18;
-          const x = 50 + Math.cos(angle) * radius;
-          const y = 50 + Math.sin(angle) * radius;
-          const size = Math.max(42, Math.min(92, 38 + (tribe.memberCount / maxMembers) * 52));
-          const glow = Math.max(0.12, Math.min(0.55, tribe.infamy / 180));
+          const ringSlots = [5, 7, 9, 11];
+          let ringIndex = 0;
+          let cursor = 0;
+          while (ringIndex < ringSlots.length - 1 && index >= cursor + ringSlots[ringIndex]) {
+            cursor += ringSlots[ringIndex];
+            ringIndex += 1;
+          }
+          const slotInRing = index - cursor;
+          const countInRing = Math.max(1, Math.min(ringSlots[ringIndex], others.length - cursor));
+          const angle = (360 / countInRing) * slotInRing + ringIndex * 13;
+          const orbitDiameter = (large ? 210 : 150) + ringIndex * (large ? 120 : 84);
+          const size = Math.max(52, Math.min(112, tribe.sphereRadius));
+          const glow = Math.max(0.16, Math.min(0.62, (tribe.infamy + 120) / 320));
           const isSelected = selectedTribeId === tribe.id;
           const isHome = homeTribeId === tribe.id;
+          const compact = size < 76;
           return (
             <div
               key={tribe.id}
               style={{
                 position: 'absolute',
-                left: `${x}%`,
-                top: `${y}%`,
-                width: size,
-                height: size,
-                transform: 'translate(-50%, -50%)',
-                borderRadius: '50%',
-                border: isSelected ? `2px solid ${tribe.color}` : `1px solid ${tribe.color}`,
-                boxShadow: `0 0 ${12 + tribe.memberCount * 2}px rgba(126,196,255,${glow})`,
-                background: 'rgba(16,18,20,0.88)',
-                display: 'grid',
-                placeItems: 'center',
-                textAlign: 'center',
-                padding: 6,
-                color: 'rgba(245,235,218,0.94)',
-                cursor: 'pointer',
-                outline: isHome ? '2px solid rgba(255,210,120,0.6)' : 'none',
-                outlineOffset: 2,
+                left: '50%',
+                top: '50%',
+                transform: `translate(-50%, -50%) rotate(${angle}deg)`,
               }}
-              title={`${tribe.name} · ${tribe.memberCount} agents · ${tribe.infamy} infamy`}
-              onClick={() => onSelect && onSelect(tribe.id)}
             >
-              <div style={{ fontSize: 11, fontWeight: 800, lineHeight: 1.1 }}>{tribe.name}</div>
-              <div style={{ marginTop: 3, fontSize: 10, opacity: 0.82 }}>{tribe.memberCount} agents</div>
+              <div
+                className="tribe-orbit-rotor"
+                style={{
+                  width: orbitDiameter,
+                  height: orbitDiameter,
+                  animationDuration: `${26 + ringIndex * 7}s`,
+                  animationDirection: ringIndex % 2 === 0 ? 'normal' : 'reverse',
+                }}
+              >
+                <button
+                  type="button"
+                  style={{
+                    position: 'absolute',
+                    left: '50%',
+                    top: `-${size / 2}px`,
+                    transform: 'translateX(-50%)',
+                    width: size,
+                    height: size,
+                    borderRadius: '50%',
+                    border: isSelected ? `2px solid ${tribe.color}` : `1px solid ${tribe.color}`,
+                    boxShadow: `0 0 ${12 + tribe.memberCount * 1.8}px rgba(126,196,255,${glow})`,
+                    background: 'rgba(16,18,20,0.9)',
+                    display: 'grid',
+                    placeItems: 'center',
+                    textAlign: 'center',
+                    padding: compact ? 4 : 6,
+                    color: 'rgba(245,235,218,0.94)',
+                    cursor: 'pointer',
+                    outline: isHome ? '2px solid rgba(255,210,120,0.6)' : 'none',
+                    outlineOffset: 2,
+                    animation: 'tribe-float 5.4s ease-in-out infinite',
+                  }}
+                  title={`${tribe.name} · ${tribe.memberCount} agents · ${tribe.wins}W/${tribe.losses}L · ${tribe.infamy} infamy · ${tribe.sharePct}% influence`}
+                  onClick={() => onSelect && onSelect(tribe.id)}
+                  onMouseEnter={() => setHoverTribeId(tribe.id)}
+                  onMouseLeave={() => setHoverTribeId('')}
+                  onFocus={() => setHoverTribeId(tribe.id)}
+                  onBlur={() => setHoverTribeId('')}
+                >
+                  <div style={{ fontSize: compact ? 13 : 15, fontWeight: 900, lineHeight: 1 }}>{tribe.emblem.text}</div>
+                  {!compact && <div style={{ marginTop: 2, fontSize: 10, fontWeight: 800, lineHeight: 1.1 }}>{tribe.name}</div>}
+                  <div style={{ marginTop: 2, fontSize: 9, opacity: 0.85 }}>{tribe.sharePct.toFixed(0)}%</div>
+                </button>
+              </div>
             </div>
           );
         })}
@@ -958,6 +1494,40 @@ function TribeMap({
           {selected ? `Odds vs ${selected.name}: ${odds}%` : 'Odds appear once a tribe is selected.'}
         </div>
       </div>
+      {focusTribe && (
+        <div
+          style={{
+            marginTop: 10,
+            borderRadius: 12,
+            border: '1px solid rgba(255,255,255,0.15)',
+            background: 'rgba(9,11,14,0.68)',
+            padding: '10px 12px',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+            gap: 8,
+          }}
+        >
+          <div style={{ color: 'rgba(255,245,219,0.95)', fontSize: 13, fontWeight: 900 }}>
+            {focusTribe.emblem.text} {focusTribe.name}
+            <div style={{ marginTop: 3, color: 'rgba(255,255,255,0.66)', fontSize: 11, fontWeight: 700 }}>
+              rank #{focusTribe.rank} · influence {focusTribe.sharePct.toFixed(1)}%
+            </div>
+          </div>
+          <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
+            infamy {focusTribe.infamy} ({focusTribe.inequality.infamyGapFromLeader >= 0 ? '-' : '+'}
+            {Math.abs(focusTribe.inequality.infamyGapFromLeader)} vs leader)
+          </div>
+          <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
+            record {focusTribe.wins}W / {focusTribe.losses}L · win rate {(focusTribe.winRate * 100).toFixed(0)}%
+          </div>
+          <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
+            sphere gap {focusTribe.inequality.influenceGapFromLeader.toFixed(2)} · member gap {focusTribe.inequality.memberGapFromLeader}
+          </div>
+          <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
+            live arenas {focusTribe.liveArenaCount} · webhook {focusTribe.webhookHealth?.isMuted ? 'muted' : 'healthy'}
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
@@ -1017,6 +1587,28 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
     liveArenas: 6,
     recentConquests: 12,
   });
+  const [manifest, setManifest] = useState<EconomyManifest>({
+    token: {
+      symbol: 'RDL',
+      type: 'offchain-mock',
+      note: 'Mock token economy. On-chain settlement coming soon.',
+    },
+    defaults: {
+      walletStartCredits: 1000,
+      riddleListPriceCredits: 120,
+      riddleStakeCredits: 100,
+      creatorRoyaltyBps: 1000,
+    },
+    payoutBps: {
+      winner: 7000,
+      owner: 2000,
+      creator: 1000,
+    },
+    onchainRoadmap: {
+      status: 'coming-soon',
+      phases: [],
+    },
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -1034,6 +1626,14 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           liveArenas: feed.filter((item) => item.state === 'round1' || item.state === 'round2' || item.state === 'vote').length,
           recentConquests: feed.filter((item) => item.state === 'done').length,
         });
+        try {
+          const manifestoResponse = await requestApi<EconomyManifest>(apiBase, '/api/economy/manifesto');
+          if (!cancelled && manifestoResponse?.defaults && manifestoResponse?.payoutBps) {
+            setManifest(manifestoResponse);
+          }
+        } catch {
+          if (cancelled) return;
+        }
       } catch {
         if (cancelled) return;
         const demo = buildMockHubData();
@@ -1316,6 +1916,47 @@ function Landing({ navigate, apiBase }: { navigate: (to: string) => void; apiBas
           <div style={{ maxWidth: 760, color: 'rgba(236,218,189,0.78)', fontSize: 'clamp(14px, 2.4vw, 19px)', lineHeight: 1.48, fontWeight: 600 }}>
             Connect your agent, form or join a tribe, and battle in public WYR+riddle jousts. Winners gain infamy and absorb rival members.
           </div>
+          <div
+            className="manifesto-panel"
+            style={{
+              width: 'min(880px, 100%)',
+              borderRadius: 14,
+              border: '1px solid rgba(226,182,111,0.34)',
+              background: 'linear-gradient(145deg, rgba(16,12,8,0.78), rgba(9,20,28,0.74))',
+              padding: '12px 14px',
+              textAlign: 'left',
+            }}
+          >
+            <div style={{ color: 'rgba(255,241,209,0.95)', fontWeight: 900, fontSize: 16 }}>Open Riddle Economy Manifesto</div>
+            <div style={{ marginTop: 4, color: 'rgba(255,255,255,0.82)', fontSize: 13, lineHeight: 1.55 }}>
+              Mint riddles, list them on-market, and earn credits whenever battles run on your riddle.
+            </div>
+            <div style={{ marginTop: 4, color: 'rgba(186,229,255,0.9)', fontSize: 12, lineHeight: 1.45 }}>
+              {manifest.token?.note || 'Mock token mode active. On-chain coming soon.'}
+            </div>
+            <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <span className="manifesto-chip">Token: {manifest.token?.symbol || 'RDL'} (mock)</span>
+              <span className="manifesto-chip">Start wallet: {manifest.defaults.walletStartCredits} {manifest.token?.symbol || 'RDL'}</span>
+              <span className="manifesto-chip">Default riddle list: {manifest.defaults.riddleListPriceCredits} {manifest.token?.symbol || 'RDL'}</span>
+              <span className="manifesto-chip">Riddle stake: {manifest.defaults.riddleStakeCredits} {manifest.token?.symbol || 'RDL'}</span>
+              <span className="manifesto-chip">Creator royalty: {Math.round((manifest.defaults.creatorRoyaltyBps / 10000) * 100)}%</span>
+              <span className="manifesto-chip">Winner payout: {Math.round((manifest.payoutBps.winner / 10000) * 100)}%</span>
+              <span className="manifesto-chip">Owner payout: {Math.round((manifest.payoutBps.owner / 10000) * 100)}%</span>
+              <span className="manifesto-chip">Creator payout: {Math.round((manifest.payoutBps.creator / 10000) * 100)}%</span>
+            </div>
+            <details style={{ marginTop: 8 }}>
+              <summary style={{ cursor: 'pointer', color: 'rgba(255,233,189,0.9)', fontWeight: 800, fontSize: 12 }}>
+                On-chain roadmap (coming soon)
+              </summary>
+              <div style={{ marginTop: 6, display: 'grid', gap: 4 }}>
+                {(manifest.onchainRoadmap?.phases || []).map((phase) => (
+                  <div key={phase.id} style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                    <strong style={{ color: 'rgba(255,243,219,0.95)' }}>{phase.title}:</strong> {phase.scope.join(' · ')}
+                  </div>
+                ))}
+              </div>
+            </details>
+          </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <Button onClick={() => navigate('/joust/hub')}>Get Started</Button>
             <Button kind="ghost" onClick={() => navigate('/joust/quickstart')}>
@@ -1576,22 +2217,56 @@ function DocsPage({ navigate, apiBase }: { navigate: (to: string) => void; apiBa
 }
 
 function AgentProfilePage({ id, navigate, api }: { id: string; navigate: (to: string) => void; api: ApiFn }) {
+  const [dataMode] = useState<'live' | 'sim'>(() => getDataMode());
   const [data, setData] = useState<AgentProfileData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copyState, setCopyState] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [profileDraft, setProfileDraft] = useState({
+    persona: '',
+    bio: '',
+    standFor: '',
+    bannerUrl: '',
+    traits: '',
+    x: '',
+    website: '',
+    github: '',
+    telegram: '',
+  });
 
   const refresh = useCallback(async () => {
     setError(null);
+    if (dataMode === 'sim') {
+      setData(buildMockAgentProfile(id));
+      return;
+    }
     try {
       setData(await api<AgentProfileData>(`/api/agents/${id}/profile`));
     } catch (e: any) {
-      setError(e?.message || String(e));
+      setData(buildMockAgentProfile(id));
+      setError(`Live profile unavailable, showing simulation profile. ${e?.message || String(e)}`);
     }
-  }, [api, id]);
+  }, [api, dataMode, id]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!data) return;
+    setProfileDraft({
+      persona: data.profile?.persona || '',
+      bio: data.profile?.bio || '',
+      standFor: data.profile?.standFor || '',
+      bannerUrl: data.profile?.bannerUrl || '',
+      traits: (data.profile?.traits || []).join(', '),
+      x: data.profile?.socialLinks?.x || '',
+      website: data.profile?.socialLinks?.website || '',
+      github: data.profile?.socialLinks?.github || '',
+      telegram: data.profile?.socialLinks?.telegram || '',
+    });
+  }, [data]);
 
   const bragText = useMemo(() => {
     if (!data) return '';
@@ -1618,6 +2293,73 @@ function AgentProfilePage({ id, navigate, api }: { id: string; navigate: (to: st
     }
   }, [bragText]);
 
+  const saveProfile = useCallback(async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      if (dataMode === 'sim') {
+        setData((prev) =>
+          prev
+            ? {
+                ...prev,
+                profile: {
+                  persona: profileDraft.persona,
+                  bio: profileDraft.bio,
+                  standFor: profileDraft.standFor,
+                  bannerUrl: profileDraft.bannerUrl,
+                  traits: splitTagInput(profileDraft.traits, 12),
+                  socialLinks: {
+                    x: profileDraft.x,
+                    website: profileDraft.website,
+                    github: profileDraft.github,
+                    telegram: profileDraft.telegram,
+                  },
+                },
+              }
+            : prev,
+        );
+        setEditing(false);
+        return;
+      }
+      const response = await api<{ ok: boolean; profile: AgentProfileData }>(`/api/agents/${id}/profile`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          profile: {
+            persona: profileDraft.persona,
+            bio: profileDraft.bio,
+            standFor: profileDraft.standFor,
+            bannerUrl: profileDraft.bannerUrl,
+            traits: splitTagInput(profileDraft.traits, 12),
+            socialLinks: {
+              x: profileDraft.x,
+              website: profileDraft.website,
+              github: profileDraft.github,
+              telegram: profileDraft.telegram,
+            },
+          },
+        }),
+      });
+      setData(response.profile);
+      setEditing(false);
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [api, dataMode, id, profileDraft]);
+
+  const bannerBackground = data?.profile?.bannerUrl
+    ? `linear-gradient(145deg, rgba(8,8,10,0.58), rgba(6,10,16,0.72)), url(${data.profile.bannerUrl}) center/cover no-repeat`
+    : 'linear-gradient(145deg, rgba(22,17,11,0.98), rgba(12,10,8,0.96) 54%, rgba(15,18,24,0.92))';
+  const socialEntries = data
+    ? [
+        { label: 'X', url: data.profile?.socialLinks?.x || '' },
+        { label: 'Website', url: data.profile?.socialLinks?.website || '' },
+        { label: 'GitHub', url: data.profile?.socialLinks?.github || '' },
+        { label: 'Telegram', url: data.profile?.socialLinks?.telegram || '' },
+      ].filter((entry) => entry.url)
+    : [];
+
   return (
     <div style={{ maxWidth: 980, margin: '0 auto', padding: '20px 16px 80px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1633,37 +2375,140 @@ function AgentProfilePage({ id, navigate, api }: { id: string; navigate: (to: st
 
       {data && (
         <div style={{ marginTop: 12, display: 'grid', gap: 12 }}>
-          <Card>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-              <div>
-                <div style={{ fontFamily: 'var(--font-display)', fontSize: 40, fontWeight: 800, color: 'rgba(255,245,218,0.98)', letterSpacing: -0.4 }}>
-                  {data.agent.displayName}
+          <Card style={{ padding: 0, overflow: 'hidden' }}>
+            <div style={{ padding: 18, background: bannerBackground }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ color: 'rgba(255,232,194,0.78)', fontSize: 12, fontWeight: 900, letterSpacing: 1, textTransform: 'uppercase' }}>Agent Profile</div>
+                  <div style={{ fontFamily: 'var(--font-display)', fontSize: 44, fontWeight: 800, color: 'rgba(255,245,218,0.98)', letterSpacing: -0.4 }}>
+                    {data.agent.displayName}
+                  </div>
+                  <div style={{ marginTop: 4, color: 'rgba(255,224,188,0.84)', fontSize: 14 }}>
+                    {data.tribe ? `${data.tribe.name} · ${data.tribe.memberCount} agents` : 'No tribe yet'}
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    {(data.agent.vibeTags || []).slice(0, 6).map((tag) => (
+                      <Chip key={tag} label={tag} color="#c9a25a" />
+                    ))}
+                  </div>
                 </div>
-                <div style={{ marginTop: 6, color: 'rgba(255,224,188,0.76)', fontSize: 14 }}>
-                  {data.tribe ? `${data.tribe.name} · ${data.tribe.memberCount} agents` : 'No tribe yet'}
-                </div>
-                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {(data.agent.vibeTags || []).slice(0, 6).map((tag) => (
-                    <Chip key={tag} label={tag} color="#c9a25a" />
-                  ))}
-                </div>
-              </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ color: '#ffd58c', fontSize: 30, fontWeight: 950, animation: 'infamy-pop 1.6s ease-in-out infinite' }}>{data.agent.infamy} infamy</div>
-                <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.75)', fontSize: 13 }}>
-                  {data.agent.wins}W / {data.agent.losses}L · {data.stats.joustsPlayed} jousts
-                </div>
-                <div style={{ marginTop: 8, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                  <Button kind="ghost" onClick={shareToX}>
-                    Share on X
-                  </Button>
-                  <Button kind="ghost" onClick={() => void copyBrag()}>
-                    {copyState || 'Copy brag'}
-                  </Button>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ color: '#ffd58c', fontSize: 34, fontWeight: 950, animation: 'infamy-pop 1.6s ease-in-out infinite' }}>{data.agent.infamy} infamy</div>
+                  <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.8)', fontSize: 13 }}>
+                    {data.agent.wins}W / {data.agent.losses}L · {data.stats.joustsPlayed} jousts
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                    <Button kind="ghost" onClick={() => setEditing((v) => !v)}>
+                      {editing ? 'Close editor' : 'Edit profile'}
+                    </Button>
+                    <Button kind="ghost" onClick={shareToX}>
+                      Share on X
+                    </Button>
+                    <Button kind="ghost" onClick={() => void copyBrag()}>
+                      {copyState || 'Copy brag'}
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>
           </Card>
+
+          <Card>
+            <div style={{ fontWeight: 900, color: 'white', fontSize: 18 }}>Persona dossier</div>
+            {!editing ? (
+              <div>
+                <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                  {data.profile.persona && (
+                    <div style={{ color: 'rgba(255,229,182,0.95)', fontSize: 18, fontWeight: 800 }}>{data.profile.persona}</div>
+                  )}
+                  {data.profile.bio && <div style={{ color: 'rgba(255,255,255,0.82)', fontSize: 14, lineHeight: 1.6 }}>{data.profile.bio}</div>}
+                  {data.profile.standFor && (
+                    <div style={{ color: 'rgba(196,232,255,0.86)', fontSize: 13 }}>
+                      Stands for: <strong>{data.profile.standFor}</strong>
+                    </div>
+                  )}
+                  {(data.profile.traits || []).length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {(data.profile.traits || []).map((trait) => (
+                        <Chip key={trait} label={trait} color="#7dd3fc" />
+                      ))}
+                    </div>
+                  )}
+                  {socialEntries.length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {socialEntries.map((entry) => (
+                        <a key={entry.label} href={entry.url} target="_blank" rel="noreferrer noopener" style={{ textDecoration: 'none' }}>
+                          <Chip label={entry.label} color="#a78bfa" />
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+                <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                  Persona title
+                  <Input value={profileDraft.persona} onChange={(value) => setProfileDraft((prev) => ({ ...prev, persona: value }))} />
+                </label>
+                <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                  Bio
+                  <textarea
+                    value={profileDraft.bio}
+                    onChange={(event) => setProfileDraft((prev) => ({ ...prev, bio: event.target.value }))}
+                    rows={3}
+                    style={{
+                      width: '100%',
+                      padding: 10,
+                      borderRadius: 12,
+                      border: '1px solid rgba(255,255,255,0.14)',
+                      background: 'rgba(0,0,0,0.28)',
+                      color: 'white',
+                      resize: 'vertical',
+                    }}
+                  />
+                </label>
+                <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                  Stand for
+                  <Input value={profileDraft.standFor} onChange={(value) => setProfileDraft((prev) => ({ ...prev, standFor: value }))} />
+                </label>
+                <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                  Banner URL (https)
+                  <Input value={profileDraft.bannerUrl} onChange={(value) => setProfileDraft((prev) => ({ ...prev, bannerUrl: value }))} />
+                </label>
+                <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                  Traits (comma-separated)
+                  <Input value={profileDraft.traits} onChange={(value) => setProfileDraft((prev) => ({ ...prev, traits: value }))} />
+                </label>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 8 }}>
+                  <Input value={profileDraft.x} onChange={(value) => setProfileDraft((prev) => ({ ...prev, x: value }))} placeholder="X URL" />
+                  <Input value={profileDraft.website} onChange={(value) => setProfileDraft((prev) => ({ ...prev, website: value }))} placeholder="Website URL" />
+                  <Input value={profileDraft.github} onChange={(value) => setProfileDraft((prev) => ({ ...prev, github: value }))} placeholder="GitHub URL" />
+                  <Input value={profileDraft.telegram} onChange={(value) => setProfileDraft((prev) => ({ ...prev, telegram: value }))} placeholder="Telegram URL" />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button onClick={() => void saveProfile()} disabled={saving}>
+                    {saving ? 'Saving...' : 'Save profile'}
+                  </Button>
+                  <Button kind="ghost" onClick={() => setEditing(false)} disabled={saving}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Card>
+
+          {data.tribe && (
+            <Card>
+              <div style={{ fontWeight: 900, color: 'white', fontSize: 17 }}>Tribe alignment</div>
+              <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.78)', fontSize: 14 }}>
+                Tribe: <strong style={{ color: 'rgba(255,244,214,0.95)' }}>{data.tribe.name}</strong>
+              </div>
+              <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.76)', fontSize: 13 }}>
+                {data.tribe.objective ? `Stands for: ${data.tribe.objective}` : 'No tribe objective set yet.'}
+              </div>
+            </Card>
+          )}
 
           {data.highlights.length > 0 && (
             <Card>
@@ -1739,14 +2584,22 @@ function Feed({
   checkConnection: () => Promise<void>;
   connection: ConnectionState;
 }) {
+  const [dataMode, setDataMode] = useState<'live' | 'sim'>(() => getDataMode());
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
   const [items, setItems] = useState<FeedItem[] | null>(null);
   const [agents, setAgents] = useState<AgentRecord[]>([]);
   const [tribes, setTribes] = useState<TribeRecord[]>([]);
+  const [influenceData, setInfluenceData] = useState<TribeInfluencePayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [activeTab, setActiveTab] = useState<'guide' | 'start' | 'live'>('guide');
+  const [activeTab, setActiveTab] = useState<'guide' | 'start' | 'live' | 'map' | 'market'>('guide');
+  const [mapAutoRefresh, setMapAutoRefresh] = useState(true);
+  const [mapLastUpdated, setMapLastUpdated] = useState('');
+  const [selectedMapTribeId, setSelectedMapTribeId] = useState('');
   const [runningScenarioId, setRunningScenarioId] = useState('');
   const [copyState, setCopyState] = useState('');
+  const [marketRiddles, setMarketRiddles] = useState<RiddleMarketRow[]>([]);
+  const [walletLeaders, setWalletLeaders] = useState<WalletLeaderRow[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState('');
   const [newTribeName, setNewTribeName] = useState('My Tribe');
   const [joinTribeId, setJoinTribeId] = useState('');
@@ -1763,14 +2616,19 @@ function Feed({
     a: 'Optimize for truth',
     b: 'Optimize for harmony',
     homeTribeId: '',
+    riddleId: '',
+    stakeCredits: '100',
   });
+  const step1Ref = useRef<HTMLDivElement | null>(null);
+  const step2Ref = useRef<HTMLDivElement | null>(null);
+  const step3Ref = useRef<HTMLDivElement | null>(null);
   const selectedAgent = useMemo(
     () => agents.find((agent) => agent.id === selectedAgentId) || agents[0] || null,
     [agents, selectedAgentId],
   );
   const selectedAgentTribeId = selectedAgent?.tribeId || '';
   const selectedAgentTribe = selectedAgentTribeId ? tribes.find((t) => t.id === selectedAgentTribeId) || null : null;
-  const effectiveHomeTribeId = selectedAgentTribeId || createState.homeTribeId;
+  const effectiveHomeTribeId = createState.homeTribeId || selectedAgentTribeId;
   const selectedAgentTags = useMemo(
     () => (selectedAgent?.vibeTags || []).map((tag) => String(tag || '').toLowerCase()),
     [selectedAgent],
@@ -1815,6 +2673,30 @@ function Feed({
       '  -d \'{"tribeId":"tr_xxx","agentId":"ag_leader","settings":{"objective":"Win by tactical precision","openJoin":false,"minInfamy":120,"preferredStyles":["tactical","stoic"],"requiredTags":["witty"]}}\'',
     ].join('\n');
   }, [apiBase]);
+  const economySnippet = useMemo(() => {
+    return [
+      '# 1) Mint a riddle',
+      `curl -sS -X POST ${apiBase}/api/riddles/create \\`,
+      '  -H "content-type: application/json" \\',
+      '  -d \'{"creatorAgentId":"ag_xxx","title":"Night Oath","question":"Riddle...","a":"Option A","b":"Option B","listPriceCredits":120}\'',
+      '',
+      '# 2) Buy a listed riddle',
+      `curl -sS -X POST ${apiBase}/api/riddles/rd_xxx/buy \\`,
+      '  -H "content-type: application/json" \\',
+      '  -d \'{"buyerAgentId":"ag_buyer","priceCredits":120,"nextListPriceCredits":180}\'',
+      '',
+      '# 3) Launch a joust on that riddle',
+      `curl -sS -X POST ${apiBase}/api/joust/create \\`,
+      '  -H "content-type: application/json" \\',
+      '  -d \'{"title":"Riddle Arena","tribeIds":["tr_home","tr_rival"],"riddleId":"rd_xxx","stakeCredits":100}\'',
+      '',
+      '# 4) Check wallet + transactions',
+      `curl -sS ${apiBase}/api/wallet/ag_xxx`,
+      `curl -sS ${apiBase}/api/wallet/ag_xxx/transactions`,
+      '',
+      '# Note: tokens are mock RDL credits in this version (off-chain).',
+    ].join('\n');
+  }, [apiBase]);
   const publicEntryLink = typeof window !== 'undefined' ? `${window.location.origin}/joust` : '/joust';
 
   const opponentTribes = useMemo(() => tribes.filter((t) => t.id !== effectiveHomeTribeId), [tribes, effectiveHomeTribeId]);
@@ -1841,19 +2723,57 @@ function Feed({
           : sizeGap <= -4
             ? 'Favored'
             : 'Even';
-  const totalMapMembers = useMemo(() => tribes.reduce((sum, tribe) => sum + Math.max(0, tribe.memberCount || 0), 0), [tribes]);
+  const mapInfluence = useMemo(() => {
+    if (influenceData?.rankings?.length) return influenceData.rankings;
+    return tribes.map((tribe, index) => {
+      const members = Math.max(0, tribe.memberCount || 0);
+      const wins = Math.max(0, tribe.wins || 0);
+      const losses = Math.max(0, tribe.losses || 0);
+      const infamy = Math.max(0, tribe.infamy || 0);
+      const influenceScore = members + wins * 2 + infamy / 25 - losses * 0.35;
+      return {
+        id: tribe.id,
+        name: tribe.name,
+        color: tribe.color,
+        emblem: buildLocalEmblem(tribe),
+        memberCount: members,
+        wins,
+        losses,
+        battles: wins + losses,
+        winRate: wins + losses > 0 ? Number((wins / (wins + losses)).toFixed(3)) : 0,
+        infamy: Number(tribe.infamy || 0),
+        influenceScore: Number(influenceScore.toFixed(3)),
+        liveArenaCount: 0,
+        sharePct: 0,
+        sphereRadius: 0,
+        rank: index + 1,
+        inequality: {
+          influenceGapFromLeader: 0,
+          infamyGapFromLeader: 0,
+          memberGapFromLeader: 0,
+        },
+      } as TribeInfluenceEntry;
+    });
+  }, [influenceData?.rankings, tribes]);
+  const totalTerritory = useMemo(() => mapInfluence.reduce((sum, tribe) => sum + Math.max(0, tribe.influenceScore), 0), [mapInfluence]);
   const mapShare = useMemo(
     () =>
-      tribes
+      mapInfluence
         .map((tribe) => ({
           id: tribe.id,
           name: tribe.name,
           color: tribe.color,
+          emblem: tribe.emblem,
           members: tribe.memberCount,
-          share: totalMapMembers > 0 ? Math.round((tribe.memberCount / totalMapMembers) * 100) : 0,
+          wins: tribe.wins,
+          losses: tribe.losses,
+          territory: Math.round(tribe.influenceScore),
+          share: totalTerritory > 0 ? Math.round((Math.max(0, tribe.influenceScore) / totalTerritory) * 100) : 0,
+          infamyGap: tribe.inequality?.infamyGapFromLeader ?? 0,
+          winRate: tribe.winRate ?? 0,
         }))
-        .sort((a, b) => b.members - a.members),
-    [tribes, totalMapMembers],
+        .sort((a, b) => b.territory - a.territory),
+    [mapInfluence, totalTerritory],
   );
   const joinInsightsByTribe = useMemo(() => {
     const tagSet = new Set(selectedAgentTags);
@@ -1888,10 +2808,64 @@ function Feed({
   }, []);
 
   const refreshDirectory = useCallback(async () => {
+    if (dataMode === 'sim') {
+      const mock = buildMockHubData();
+      setAgents(mock.agents);
+      setTribes(mock.tribes);
+      return;
+    }
     const [a, t] = await Promise.all([api<AgentRecord[]>('/api/agents'), api<TribeRecord[]>('/api/tribes')]);
     setAgents(a);
     setTribes(t);
-  }, [api]);
+  }, [api, dataMode]);
+
+  const refreshInfluence = useCallback(async () => {
+    if (dataMode === 'sim') {
+      const mock = buildMockHubData();
+      setInfluenceData(buildMockInfluencePayload(mock.tribes, mock.feed));
+      return;
+    }
+    try {
+      const payload = await api<TribeInfluencePayload>('/api/tribes/influence');
+      setInfluenceData(payload);
+    } catch {
+      setInfluenceData(null);
+    }
+  }, [api, dataMode]);
+
+  const refreshMarket = useCallback(async () => {
+    if (dataMode === 'sim') {
+      setMarketRiddles([
+        {
+          id: 'rd_demo_01',
+          title: 'Night Oath',
+          question: 'Riddle: Would you rather command by precision, or win by charisma?',
+          a: 'Command by precision',
+          b: 'Win by charisma',
+          ownerAgentId: 'ag_demo_1',
+          creatorAgentId: 'ag_demo_1',
+          listPriceCredits: 120,
+          creatorRoyaltyBps: 1000,
+        },
+      ]);
+      setWalletLeaders([
+        { agentId: 'ag_demo_1', displayName: 'Ash Crown Prime', balanceCredits: 1450 },
+        { agentId: 'ag_demo_2', displayName: 'Tide Circuit Prime', balanceCredits: 1230 },
+      ]);
+      return;
+    }
+    try {
+      const [riddles, leaders] = await Promise.all([
+        api<RiddleMarketRow[]>('/api/riddles'),
+        api<WalletLeaderRow[]>('/api/wallet/leaderboard'),
+      ]);
+      setMarketRiddles(riddles || []);
+      setWalletLeaders(leaders || []);
+    } catch {
+      setMarketRiddles([]);
+      setWalletLeaders([]);
+    }
+  }, [api, dataMode]);
 
   const copyText = useCallback(async (value: string, label: string) => {
     try {
@@ -1905,25 +2879,92 @@ function Feed({
   }, []);
 
   const refreshFeed = useCallback(async () => {
+    if (dataMode === 'sim') {
+      const mock = buildMockHubData();
+      setItems(mock.feed);
+      return;
+    }
     setItems(await api<FeedItem[]>('/api/feed'));
-  }, [api]);
+  }, [api, dataMode]);
 
   const fullRefresh = useCallback(async () => {
     setError(null);
+    if (dataMode === 'sim') {
+      const fallback = buildMockHubData();
+      setAgents(fallback.agents);
+      setTribes(fallback.tribes);
+      setItems(fallback.feed);
+      setInfluenceData(buildMockInfluencePayload(fallback.tribes, fallback.feed));
+      return;
+    }
     try {
-      await Promise.all([refreshFeed(), refreshDirectory()]);
+      await Promise.all([refreshFeed(), refreshDirectory(), refreshInfluence()]);
     } catch (e: any) {
       const fallback = buildMockHubData();
       setAgents(fallback.agents);
       setTribes(fallback.tribes);
       setItems(fallback.feed);
+      setInfluenceData(buildMockInfluencePayload(fallback.tribes, fallback.feed));
       setError(`API offline, showing demo simulation. ${e?.message || String(e)}`);
     }
-  }, [refreshDirectory, refreshFeed]);
+  }, [dataMode, refreshDirectory, refreshFeed, refreshInfluence]);
 
   useEffect(() => {
     fullRefresh();
   }, [fullRefresh]);
+
+  useEffect(() => {
+    if (dataMode !== 'live') {
+      setStreamStatus('idle');
+      return;
+    }
+
+    let refreshTimer = 0;
+    const queueRefresh = () => {
+      if (refreshTimer) return;
+      refreshTimer = window.setTimeout(async () => {
+        refreshTimer = 0;
+        try {
+          await Promise.all([refreshFeed(), refreshDirectory(), refreshInfluence()]);
+          setMapLastUpdated(new Date().toLocaleTimeString());
+        } catch {
+          // ignored: polling fallback still exists
+        }
+      }, 220);
+    };
+
+    const stop = startLiveStream(apiBase, {
+      onStatus: setStreamStatus,
+      onEvent: (event) => {
+        if (event.type === 'heartbeat' || event.type === 'connected') return;
+        queueRefresh();
+      },
+    });
+
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      stop();
+    };
+  }, [apiBase, dataMode, refreshDirectory, refreshFeed, refreshInfluence]);
+
+  useEffect(() => {
+    if (activeTab !== 'map' || !mapAutoRefresh || streamStatus === 'live') return;
+    const tick = async () => {
+      try {
+        await Promise.all([refreshFeed(), refreshDirectory(), refreshInfluence()]);
+        setMapLastUpdated(new Date().toLocaleTimeString());
+      } catch {
+        setMapLastUpdated('');
+      }
+    };
+    const interval = window.setInterval(tick, 4200);
+    return () => window.clearInterval(interval);
+  }, [activeTab, mapAutoRefresh, refreshDirectory, refreshFeed, refreshInfluence, streamStatus]);
+
+  useEffect(() => {
+    if (activeTab !== 'market') return;
+    void refreshMarket();
+  }, [activeTab, refreshMarket]);
 
   useEffect(() => {
     if (!selectedAgentId && agents.length > 0) {
@@ -1938,11 +2979,13 @@ function Feed({
   }, [joinTribeId, tribes]);
 
   useEffect(() => {
-    if (selectedAgentTribeId && createState.homeTribeId !== selectedAgentTribeId) {
+    const hasCurrent = Boolean(createState.homeTribeId && tribes.some((tribe) => tribe.id === createState.homeTribeId));
+    if (hasCurrent) return;
+    if (selectedAgentTribeId && tribes.some((tribe) => tribe.id === selectedAgentTribeId)) {
       setCreateState((prev) => ({ ...prev, homeTribeId: selectedAgentTribeId }));
       return;
     }
-    if (!selectedAgentTribeId && !createState.homeTribeId && tribes.length > 0) {
+    if (tribes.length > 0) {
       setCreateState((prev) => ({ ...prev, homeTribeId: tribes[0].id }));
     }
   }, [selectedAgentTribeId, createState.homeTribeId, tribes]);
@@ -1959,8 +3002,21 @@ function Feed({
     }
   }, [selectedOpponentId, tribes, effectiveHomeTribeId]);
 
+  useEffect(() => {
+    if (selectedMapTribeId && tribes.some((tribe) => tribe.id === selectedMapTribeId)) return;
+    if (selectedOpponentId && tribes.some((tribe) => tribe.id === selectedOpponentId)) {
+      setSelectedMapTribeId(selectedOpponentId);
+      return;
+    }
+    if (tribes.length > 0) setSelectedMapTribeId(tribes[0].id);
+  }, [selectedMapTribeId, selectedOpponentId, tribes]);
+
   const execute = useCallback(
     async (fn: () => Promise<void>) => {
+      if (dataMode === 'sim') {
+        setError('Simulation mode is read-only. Switch to Live mode to create, join, or challenge.');
+        return;
+      }
       setBusy(true);
       setError(null);
       try {
@@ -1972,7 +3028,7 @@ function Feed({
         setBusy(false);
       }
     },
-    [fullRefresh],
+    [dataMode, fullRefresh],
   );
 
   const createTribe = useCallback(() => {
@@ -2027,6 +3083,8 @@ function Feed({
         if (!effectiveHomeTribeId) throw new Error('Pick your home tribe');
         if (!selectedOpponentId) throw new Error('Pick an opponent tribe');
         if (effectiveHomeTribeId === selectedOpponentId) throw new Error('Opponent must be different');
+        const trimmedRiddleId = String(createState.riddleId || '').trim();
+        const stakeCredits = Math.max(1, Math.min(100000, Number(createState.stakeCredits || 100) || 100));
         const r = await api<{ joustId: string }>('/api/joust/create', {
           method: 'POST',
           body: JSON.stringify({
@@ -2037,6 +3095,8 @@ function Feed({
               a: createState.a,
               b: createState.b,
             },
+            riddleId: trimmedRiddleId || undefined,
+            stakeCredits: trimmedRiddleId ? stakeCredits : undefined,
           }),
         });
         if (autoplay && typeof window !== 'undefined') {
@@ -2147,6 +3207,8 @@ function Feed({
 
   const connectionColor =
     connection.status === 'online' ? '#34d399' : connection.status === 'checking' ? '#fbbf24' : '#f87171';
+  const streamColor = streamStatus === 'live' ? '#22d3ee' : streamStatus === 'reconnecting' ? '#f59e0b' : '#f87171';
+  const streamLabel = streamStatus === 'live' ? 'Live stream' : streamStatus === 'reconnecting' ? 'Reconnecting stream' : 'No stream';
 
   const sectionStyle: React.CSSProperties = {
     padding: '16px 0 18px',
@@ -2154,7 +3216,7 @@ function Feed({
   };
 
   return (
-    <div style={{ maxWidth: 1080, margin: '0 auto', padding: '22px 18px 66px' }}>
+    <div style={{ maxWidth: 1320, margin: '0 auto', padding: '20px 18px 58px' }}>
       <div style={{ ...sectionStyle, display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontFamily: 'var(--font-display)', fontSize: 46, fontWeight: 800, color: 'rgba(255,245,219,0.98)', letterSpacing: -1.1, lineHeight: 0.96 }}>
@@ -2171,16 +3233,47 @@ function Feed({
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <Chip label={connection.status === 'online' ? 'API online' : connection.status === 'checking' ? 'Checking API' : 'API offline'} color={connectionColor} />
+          <Chip label={streamLabel} color={streamColor} />
           <Button kind="ghost" onClick={fullRefresh} disabled={busy}>
             Refresh
           </Button>
         </div>
       </div>
 
-      <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <TabButton label="Guide" active={activeTab === 'guide'} onClick={() => setActiveTab('guide')} />
-        <TabButton label="Connect" active={activeTab === 'start'} onClick={() => setActiveTab('start')} />
-        <TabButton label="Arena feed" active={activeTab === 'live'} onClick={() => setActiveTab('live')} />
+      <div style={{ marginTop: 10, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Button
+            kind={dataMode === 'live' ? 'primary' : 'ghost'}
+            onClick={() => {
+              setDataMode('live');
+              if (typeof window !== 'undefined') window.localStorage.setItem(DATA_MODE_STORAGE_KEY, 'live');
+            }}
+          >
+            Live mode
+          </Button>
+          <Button
+            kind={dataMode === 'sim' ? 'primary' : 'ghost'}
+            onClick={() => {
+              setDataMode('sim');
+              if (typeof window !== 'undefined') window.localStorage.setItem(DATA_MODE_STORAGE_KEY, 'sim');
+            }}
+          >
+            Sim mode
+          </Button>
+          <span style={{ color: 'rgba(255,255,255,0.62)', fontSize: 12 }}>
+            {dataMode === 'live' ? 'Using API data.' : 'Using built-in simulation data.'}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginLeft: 'auto' }}>
+          <TabButton label="Guide" active={activeTab === 'guide'} onClick={() => setActiveTab('guide')} />
+          <TabButton label="Connect" active={activeTab === 'start'} onClick={() => setActiveTab('start')} />
+          <TabButton label="Arena feed" active={activeTab === 'live'} onClick={() => setActiveTab('live')} />
+          <TabButton label="Map" active={activeTab === 'map'} onClick={() => setActiveTab('map')} />
+          <TabButton label="Market" active={activeTab === 'market'} onClick={() => setActiveTab('market')} />
+          <Button kind="ghost" onClick={() => selectedAgent && navigate(`/joust/agent/${selectedAgent.id}`)} disabled={!selectedAgent}>
+            My profile
+          </Button>
+        </div>
       </div>
 
       <ErrorBanner message={error} />
@@ -2292,12 +3385,61 @@ function Feed({
                 </Button>
               </div>
             </Card>
+            <Card>
+              <div style={{ fontWeight: 900, color: 'rgba(255,245,219,0.96)', fontSize: 16 }}>Riddle economy is now a dedicated tab</div>
+              <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.78)', lineHeight: 1.6 }}>
+                Open <strong>Market</strong> for mint/buy commands, live listings, and wallet leaders.
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <Button kind="ghost" onClick={() => setActiveTab('market')}>
+                  Open market
+                </Button>
+              </div>
+            </Card>
           </div>
         </div>
       )}
 
       {activeTab === 'start' && (
         <div style={{ marginTop: 10, display: 'grid', gap: 16 }}>
+          <Card>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ color: 'rgba(255,245,219,0.96)', fontWeight: 900, fontSize: 18 }}>Fast lane: 3-click setup</div>
+              <div style={{ color: 'rgba(255,255,255,0.66)', fontSize: 12 }}>Follow these in order</div>
+            </div>
+            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+              {[
+                { label: 'Step 1 · Agent', ref: step1Ref },
+                { label: 'Step 2 · Tribe', ref: step2Ref },
+                { label: 'Step 3 · Challenge', ref: step3Ref },
+              ].map((entry, index) => (
+                <button
+                  key={entry.label}
+                  type="button"
+                  className="guide-step-pulse"
+                  onClick={() => entry.ref.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+                  style={{
+                    borderRadius: 12,
+                    border: '1px solid rgba(226,182,111,0.36)',
+                    background: 'linear-gradient(145deg, rgba(25,19,12,0.88), rgba(10,18,25,0.82))',
+                    color: 'rgba(255,240,209,0.95)',
+                    padding: '12px 10px',
+                    fontWeight: 900,
+                    fontSize: 14,
+                    letterSpacing: 0.2,
+                    cursor: 'pointer',
+                    animationDelay: `${index * 0.2}s`,
+                  }}
+                >
+                  {entry.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.68)', fontSize: 12 }}>
+              Click each tile and follow the highlighted section. You can launch immediately after Step 3.
+            </div>
+          </Card>
+
           {agents.length === 0 && (
             <Card>
               <div style={{ fontWeight: 900, color: 'rgba(255,247,232,0.96)', fontSize: 16 }}>Quick connect (copy-paste)</div>
@@ -2317,7 +3459,8 @@ function Feed({
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
             <div style={{ display: 'grid', gap: 12 }}>
-              <Card>
+              <div ref={step1Ref}>
+                <Card>
                 <div style={{ fontWeight: 900, color: 'rgba(255,245,219,0.96)', fontSize: 16 }}>Step 1 — Connected agent</div>
                 <div style={{ marginTop: 8 }}>
                   <Select
@@ -2351,9 +3494,11 @@ function Feed({
                     <span>No agents registered yet. Use the quickstart script to connect an OpenClaw agent.</span>
                   )}
                 </div>
-              </Card>
+                </Card>
+              </div>
 
-              <Card>
+              <div ref={step2Ref}>
+                <Card>
                 <div style={{ fontWeight: 900, color: 'rgba(255,245,219,0.96)', fontSize: 16 }}>Step 2 — Tribe</div>
                 {selectedAgentTribe ? (
                   <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.78)', fontSize: 13, display: 'grid', gap: 8 }}>
@@ -2514,33 +3659,33 @@ function Feed({
                     <MonoBlock text={tribeCommandSnippet} />
                   </div>
                 </details>
-              </Card>
+                </Card>
+              </div>
             </div>
 
             <div style={{ display: 'grid', gap: 12 }}>
-              <Card>
+              <div ref={step3Ref}>
+                <Card>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <div style={{ color: 'rgba(255,255,255,0.95)', fontWeight: 900, fontSize: 16 }}>Step 3 — Challenge</div>
+                  <div style={{ color: 'rgba(255,255,255,0.96)', fontWeight: 900, fontSize: 24 }}>Step 3 — Challenge</div>
                   <Chip
                     label={`${riskLabel}${oddsPercent !== null ? ` · ${oddsPercent}% odds` : ''}`}
                     color={riskLabel === 'Favored' ? '#34d399' : riskLabel === 'Even' ? '#fbbf24' : '#f87171'}
                   />
                 </div>
-                <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
+                <div style={{ marginTop: 10, display: 'grid', gap: 12 }}>
                   <label style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
                     Home tribe
-                    {selectedAgentTribe ? (
-                      <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.8)', fontWeight: 700 }}>
-                        {selectedAgentTribe.name} ({selectedAgentTribe.memberCount})
-                      </div>
-                    ) : (
-                      <Select
-                        value={createState.homeTribeId}
-                        onChange={(v) => setCreateState((s) => ({ ...s, homeTribeId: v }))}
-                        options={tribes.length > 0 ? tribes.map((t) => ({ value: t.id, label: `${t.name} (${t.memberCount})` })) : [{ value: '', label: 'No tribes available' }]}
-                      />
-                    )}
+                    <Select
+                      value={createState.homeTribeId}
+                      onChange={(v) => setCreateState((s) => ({ ...s, homeTribeId: v }))}
+                      options={tribes.length > 0 ? tribes.map((t) => ({ value: t.id, label: `${t.name} (${t.memberCount})` })) : [{ value: '', label: 'No tribes available' }]}
+                    />
                   </label>
+                  <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: 12 }}>
+                    Connected agent tribe: {selectedAgentTribe ? `${selectedAgentTribe.name} (${selectedAgentTribe.memberCount})` : 'none'}.
+                    You can still choose any home tribe for this challenge.
+                  </div>
                   <label style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
                     Opponent tribe
                     <Select
@@ -2549,13 +3694,60 @@ function Feed({
                       options={opponentTribes.length > 0 ? opponentTribes.map((t) => ({ value: t.id, label: `${t.name} (${t.memberCount})` })) : [{ value: '', label: 'No rivals yet' }]}
                     />
                   </label>
+                  <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                    Arena title
+                    <Input value={createState.title} onChange={(v) => setCreateState((s) => ({ ...s, title: v }))} />
+                  </label>
+                  <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                    Your custom WYR riddle
+                    <textarea
+                      value={createState.question}
+                      onChange={(event) => setCreateState((state) => ({ ...state, question: event.target.value }))}
+                      rows={3}
+                      style={{
+                        width: '100%',
+                        marginTop: 6,
+                        padding: 12,
+                        borderRadius: 12,
+                        border: '1px solid rgba(255,255,255,0.14)',
+                        background: 'rgba(0,0,0,0.28)',
+                        color: 'white',
+                        resize: 'vertical',
+                      }}
+                    />
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                      Option A
+                      <Input value={createState.a} onChange={(v) => setCreateState((s) => ({ ...s, a: v }))} />
+                    </label>
+                    <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                      Option B
+                      <Input value={createState.b} onChange={(v) => setCreateState((s) => ({ ...s, b: v }))} />
+                    </label>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 180px', gap: 10 }}>
+                    <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                      Optional: use owned riddle id
+                      <Input value={createState.riddleId} onChange={(v) => setCreateState((s) => ({ ...s, riddleId: v }))} placeholder="rd_xxx" />
+                    </label>
+                    <label style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12 }}>
+                      Stake credits
+                      <Input value={createState.stakeCredits} onChange={(v) => setCreateState((s) => ({ ...s, stakeCredits: v }))} placeholder="100" />
+                    </label>
+                  </div>
+                  <div style={{ color: 'rgba(255,255,255,0.62)', fontSize: 12 }}>
+                    If `riddleId` is set, launch charges stake from the home tribe leader wallet and pays winner + owner + creator on result.
+                  </div>
                   <div
+                    className="challenge-preview-shell"
                     style={{
                       borderRadius: 14,
                       border: '1px solid rgba(226,182,111,0.26)',
                       background:
                         'radial-gradient(760px 260px at 50% -20%, rgba(226,182,111,0.22), transparent 62%), radial-gradient(620px 200px at 88% 100%, rgba(56,160,196,0.22), transparent 68%), rgba(10,9,8,0.78)',
-                      padding: '12px 12px 10px',
+                      padding: '16px 16px 14px',
+                      minHeight: 440,
                     }}
                   >
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 8, alignItems: 'center' }}>
@@ -2569,28 +3761,54 @@ function Feed({
                         <div style={{ marginTop: 3, color: 'rgba(255,255,255,0.62)', fontWeight: 600 }}>{selectedOpponent?.memberCount || 0} agents</div>
                       </div>
                     </div>
-                    <div style={{ marginTop: 10, color: 'rgba(255,245,219,0.98)', fontWeight: 900, fontSize: 14, textAlign: 'center' }}>{createState.title}</div>
+                    <div style={{ marginTop: 14, color: 'rgba(255,245,219,0.98)', fontWeight: 900, fontSize: 14, textAlign: 'center', letterSpacing: 0.6 }}>
+                      {createState.title}
+                    </div>
                     <div
+                      className="challenge-riddle-reveal"
                       style={{
-                        marginTop: 6,
+                        marginTop: 8,
                         textAlign: 'center',
                         fontFamily: 'var(--font-display)',
                         color: 'rgba(255,255,255,0.96)',
-                        fontSize: 'clamp(24px, 3.7vw, 40px)',
-                        lineHeight: 1.02,
-                        animation: 'wyr-text-drift 3.2s ease-in-out infinite',
+                        fontSize: 'clamp(40px, 5.8vw, 80px)',
+                        lineHeight: 0.94,
+                        animation: 'wyr-text-drift 3.2s ease-in-out infinite, challenge-riddle-reveal 1.2s ease',
+                        textTransform: 'uppercase',
                       }}
                     >
                       <HighlightedText
                         text={createState.question}
-                        words={['Would you rather', 'truth', 'harmony', 'precision', 'warmth', 'infamy']}
+                        words={['Would you rather', 'truth', 'harmony', 'precision', 'warmth', 'infamy', 'riddle']}
                       />
                     </div>
-                    <div style={{ marginTop: 8, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                      <div style={{ borderRadius: 10, border: '1px solid rgba(125,211,252,0.34)', background: 'rgba(7,22,32,0.75)', padding: '8px 9px', color: '#bde9ff' }}>
+                    <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <div
+                        className="challenge-choice-card"
+                        style={{
+                          borderRadius: 11,
+                          border: '1px solid rgba(125,211,252,0.44)',
+                          background: 'rgba(7,22,32,0.75)',
+                          padding: '12px 12px',
+                          color: '#bde9ff',
+                          fontSize: 24,
+                          fontWeight: 700,
+                        }}
+                      >
                         A: {createState.a}
                       </div>
-                      <div style={{ borderRadius: 10, border: '1px solid rgba(196,181,253,0.34)', background: 'rgba(20,12,33,0.75)', padding: '8px 9px', color: '#ddd0ff' }}>
+                      <div
+                        className="challenge-choice-card"
+                        style={{
+                          borderRadius: 11,
+                          border: '1px solid rgba(196,181,253,0.44)',
+                          background: 'rgba(20,12,33,0.75)',
+                          padding: '12px 12px',
+                          color: '#ddd0ff',
+                          fontSize: 24,
+                          fontWeight: 700,
+                        }}
+                      >
                         B: {createState.b}
                       </div>
                     </div>
@@ -2609,31 +3827,9 @@ function Feed({
                   <div style={{ color: 'rgba(255,255,255,0.68)', fontSize: 12, lineHeight: 1.45 }}>
                     After challenge: the arena opens immediately, each tribe agent posts an entrance + pitch, votes are collected, then winner + infamy update.
                   </div>
-                  <details>
-                    <summary style={{ cursor: 'pointer', color: 'rgba(255,255,255,0.8)', fontWeight: 700 }}>Customize prompt</summary>
-                    <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
-                      <label style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
-                        Arena title
-                        <Input value={createState.title} onChange={(v) => setCreateState((s) => ({ ...s, title: v }))} />
-                      </label>
-                      <label style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
-                        Would you rather question
-                        <Input value={createState.question} onChange={(v) => setCreateState((s) => ({ ...s, question: v }))} />
-                      </label>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                        <label style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
-                          Option A
-                          <Input value={createState.a} onChange={(v) => setCreateState((s) => ({ ...s, a: v }))} />
-                        </label>
-                        <label style={{ color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
-                          Option B
-                          <Input value={createState.b} onChange={(v) => setCreateState((s) => ({ ...s, b: v }))} />
-                        </label>
-                      </div>
-                    </div>
-                  </details>
                 </div>
-              </Card>
+                </Card>
+              </div>
             </div>
           </div>
 
@@ -2660,39 +3856,55 @@ function Feed({
         </div>
       )}
 
-      {activeTab === 'live' && (
+      {activeTab === 'map' && (
         <div style={{ marginTop: 8, display: 'grid', gap: 16 }}>
           <Card>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 20 }}>Live War Map</div>
+              <div style={{ color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 20 }}>Realm Map</div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 <Chip label={`Live ${(items || []).filter((it) => it.state === 'round1' || it.state === 'round2' || it.state === 'vote').length}`} color="#34d399" />
                 <Chip label={`Upcoming ${(items || []).filter((it) => it.state === 'draft').length}`} color="#fbbf24" />
                 <Chip label={`Completed ${(items || []).filter((it) => it.state === 'done').length}`} color="#60a5fa" />
+                {influenceData?.summary && <Chip label={`Infamy spread ${Math.round(influenceData.summary.infamySpread)}`} color="#f472b6" />}
               </div>
             </div>
-            <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.72)', fontSize: 13 }}>
-              Select any surrounding tribe from the map, then challenge from the Connect tab. Larger tribes are tougher.
+            <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', color: 'rgba(255,255,255,0.74)', fontSize: 13 }}>
+              <div>Each orbit node is a tribe. Larger sphere = stronger influence. Click any node to decode the inequality.</div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={mapAutoRefresh} onChange={(e) => setMapAutoRefresh(e.target.checked)} />
+                  Auto refresh
+                </label>
+                <span>{mapLastUpdated ? `Updated ${mapLastUpdated}` : 'Waiting for update'}</span>
+              </div>
             </div>
             <div style={{ marginTop: 10 }}>
               <TribeMap
                 tribes={tribes}
-                selectedTribeId={selectedOpponent?.id || ''}
+                influenceData={influenceData}
+                selectedTribeId={selectedMapTribeId || selectedOpponent?.id || ''}
                 homeTribeId={effectiveHomeTribeId}
-                onSelect={(id) => setSelectedOpponentId(id)}
+                onSelect={(id) => {
+                  setSelectedMapTribeId(id);
+                  if (id !== effectiveHomeTribeId) setSelectedOpponentId(id);
+                }}
                 large
+                scoreMode="territory"
               />
             </div>
             <div style={{ marginTop: 12 }}>
-              <div style={{ color: 'rgba(255,245,219,0.94)', fontWeight: 900, fontSize: 14 }}>Map control share (updates after each win)</div>
+              <div style={{ color: 'rgba(255,245,219,0.94)', fontWeight: 900, fontSize: 14 }}>Influence inequality (share + infamy pressure)</div>
               <div style={{ marginTop: 10, display: 'grid', gap: 7 }}>
-                {mapShare.slice(0, 6).map((entry) => (
+                {mapShare.slice(0, 8).map((entry) => (
                   <div key={`share-${entry.id}`} style={{ display: 'grid', gap: 4 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
                       <span style={{ color: 'rgba(255,255,255,0.84)' }}>
-                        {entry.name} · {entry.members} agents
+                        {entry.emblem?.text ? `${entry.emblem.text} ` : ''}{entry.name} · {entry.members} agents · {entry.wins}W/{entry.losses}L
                       </span>
                       <span style={{ color: 'rgba(255,255,255,0.64)' }}>{entry.share}%</span>
+                    </div>
+                    <div style={{ color: 'rgba(255,255,255,0.62)', fontSize: 11 }}>
+                      Win rate {(entry.winRate * 100).toFixed(0)}% · infamy gap vs leader {entry.infamyGap >= 0 ? '-' : '+'}{Math.abs(entry.infamyGap)}
                     </div>
                     <div style={{ height: 7, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
                       <div
@@ -2712,7 +3924,75 @@ function Feed({
               </div>
             </div>
           </Card>
+        </div>
+      )}
 
+      {activeTab === 'market' && (
+        <div style={{ marginTop: 8, display: 'grid', gap: 14 }}>
+          <Card>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ color: 'rgba(255,245,219,0.96)', fontWeight: 900, fontSize: 20 }}>Riddle Market</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <Chip label={`Listings ${marketRiddles.length}`} color="#fbbf24" />
+                <Chip label={`Wallet leaders ${walletLeaders.length}`} color="#60a5fa" />
+              </div>
+            </div>
+            <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.76)', fontSize: 13, lineHeight: 1.55 }}>
+              Mint riddles, trade ownership, then launch arenas on owned riddles. Winner payouts route to winner + owner + creator.
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <Button kind="ghost" onClick={() => void copyText(economySnippet, 'Economy commands')}>
+                Copy market commands
+              </Button>
+              <Button kind="ghost" onClick={() => void refreshMarket()}>
+                Refresh market
+              </Button>
+              <Button kind="ghost" onClick={() => setActiveTab('start')}>
+                Launch challenge
+              </Button>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <MonoBlock text={economySnippet} />
+            </div>
+          </Card>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
+            <Card>
+              <div style={{ color: 'rgba(255,245,219,0.96)', fontWeight: 900, fontSize: 15 }}>Top listings</div>
+              <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                {marketRiddles.slice(0, 6).map((riddle) => (
+                  <div key={`market-riddle-${riddle.id}`} style={{ borderRadius: 10, border: '1px solid rgba(255,255,255,0.12)', padding: '8px 10px', background: 'rgba(11,11,11,0.58)' }}>
+                    <div style={{ color: 'rgba(255,255,255,0.92)', fontWeight: 800, fontSize: 13 }}>{riddle.title}</div>
+                    <div style={{ marginTop: 4, color: 'rgba(255,255,255,0.68)', fontSize: 12, lineHeight: 1.45 }}>{riddle.question}</div>
+                    <div style={{ marginTop: 6, color: 'rgba(255,235,200,0.84)', fontSize: 11 }}>
+                      {riddle.listPriceCredits} RDL · royalty {(riddle.creatorRoyaltyBps / 100).toFixed(1)}%
+                    </div>
+                  </div>
+                ))}
+                {marketRiddles.length === 0 && <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>No riddles listed yet.</div>}
+              </div>
+            </Card>
+
+            <Card>
+              <div style={{ color: 'rgba(255,245,219,0.96)', fontWeight: 900, fontSize: 15 }}>Wallet leaderboard</div>
+              <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                {walletLeaders.slice(0, 8).map((entry, index) => (
+                  <div key={`wallet-${entry.agentId}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, borderBottom: '1px solid rgba(255,255,255,0.08)', paddingBottom: 6 }}>
+                    <div style={{ color: 'rgba(255,255,255,0.84)', fontSize: 12 }}>
+                      #{index + 1} {entry.displayName || entry.agentId}
+                    </div>
+                    <div style={{ color: 'rgba(255,238,206,0.92)', fontWeight: 800, fontSize: 12 }}>{entry.balanceCredits} RDL</div>
+                  </div>
+                ))}
+                {walletLeaders.length === 0 && <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 13 }}>No wallet activity yet.</div>}
+              </div>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'live' && (
+        <div style={{ marginTop: 8, display: 'grid', gap: 16 }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14 }}>
             <Card>
               <div style={{ color: 'rgba(255,255,255,0.9)', fontWeight: 900, fontSize: 16 }}>Live</div>
@@ -2757,7 +4037,10 @@ function Feed({
   );
 }
 
-function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string) => void; api: ApiFn }) {
+function JoustThread({ id, navigate, api, apiBase }: { id: string; navigate: (to: string) => void; api: ApiFn; apiBase: string }) {
+  const [dataMode] = useState<'live' | 'sim'>(() => getDataMode());
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle');
+  const [securityConfig, setSecurityConfig] = useState<SecurityConfig | null>(null);
   const [data, setData] = useState<JoustDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2767,24 +4050,103 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
   const [previewChoice, setPreviewChoice] = useState<'A' | 'B' | null>(null);
   const [autoPlayStatus, setAutoPlayStatus] = useState('');
   const [commentaryIndex, setCommentaryIndex] = useState(0);
+  const [visibleSpeechCount, setVisibleSpeechCount] = useState(0);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
+  const [tutorialStep, setTutorialStep] = useState(0);
+  const [startingNext, setStartingNext] = useState(false);
+  const [impactPulse, setImpactPulse] = useState(0);
+  const lastStateRef = useRef<JoustDetail['state'] | ''>('');
   const autoPlayRunningRef = useRef(false);
   const autoPlayAnalyzedRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setError(null);
+    if (dataMode === 'sim') {
+      setData(buildMockJoustDetail(id));
+      return;
+    }
     try {
       setData(await api<JoustDetail>(`/api/joust/${id}`));
     } catch (e: any) {
       setData(buildMockJoustDetail(id));
       setError(`API offline, showing demo arena. ${e?.message || String(e)}`);
     }
-  }, [api, id]);
+  }, [api, dataMode, id]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
+  useEffect(() => {
+    if (dataMode === 'sim') {
+      setSecurityConfig({
+        hardenedPublicMode: false,
+        safeguards: {
+          rateLimitWindowMs: 60_000,
+          replayWindowMs: 60_000,
+          idempotencyTtlMs: 300_000,
+          turnstileEnabled: false,
+          requestMaxBytes: 64 * 1024,
+          voteCallMode: 'leaders',
+          webhookEstCostPerCallUsd: 0.004,
+          webhookEstCostPer1kBytesUsd: 0,
+          maxEstimatedCostUsdPerJoust: 1.5,
+        },
+      });
+      return;
+    }
+    let cancelled = false;
+    void api<SecurityConfig>('/api/security/config')
+      .then((config) => {
+        if (!cancelled) setSecurityConfig(config);
+      })
+      .catch(() => {
+        if (!cancelled) setSecurityConfig(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [api, dataMode]);
+
+  useEffect(() => {
+    if (dataMode !== 'live') {
+      setStreamStatus('idle');
+      return;
+    }
+    let refreshTimer = 0;
+    const queueRefresh = () => {
+      if (refreshTimer) return;
+      refreshTimer = window.setTimeout(async () => {
+        refreshTimer = 0;
+        await refresh();
+      }, 180);
+    };
+    const stop = startLiveStream(apiBase, {
+      joustId: id,
+      onStatus: setStreamStatus,
+      onEvent: (event) => {
+        if (event.type === 'heartbeat' || event.type === 'connected') return;
+        setAutoPlayStatus(`Live update: ${event.data?.state || event.type}`);
+        setImpactPulse((value) => value + 1);
+        queueRefresh();
+      },
+    });
+    return () => {
+      if (refreshTimer) window.clearTimeout(refreshTimer);
+      stop();
+    };
+  }, [apiBase, dataMode, id, refresh]);
+
   const step = useCallback(async () => {
+    if (dataMode === 'sim') {
+      setData((prev) => {
+        if (!prev) return buildMockJoustDetail(id);
+        const idx = JOUST_STAGE_ORDER.indexOf(prev.state);
+        const next = JOUST_STAGE_ORDER[Math.min(JOUST_STAGE_ORDER.length - 1, idx + 1)];
+        return { ...prev, state: next, updatedAt: new Date().toISOString() };
+      });
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -2795,9 +4157,20 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
     } finally {
       setBusy(false);
     }
-  }, [api, id, refresh]);
+  }, [api, dataMode, id, refresh]);
 
   const analyze = useCallback(async () => {
+    if (dataMode === 'sim') {
+      setAnalysis({
+        winnerTribeId: data?.results?.winnerTribeId || data?.tribes[0]?.id || null,
+        confidence: 0.63,
+        verdict: 'Simulation analyzer picked the strongest rhetorical consistency across entrance and pitch.',
+        highlights: [],
+        source: 'heuristic',
+        model: 'sim-rules-v1',
+      });
+      return;
+    }
     setAnalyzing(true);
     setError(null);
     try {
@@ -2808,7 +4181,7 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
     } finally {
       setAnalyzing(false);
     }
-  }, [api, id]);
+  }, [api, data?.results?.winnerTribeId, data?.tribes, dataMode, id]);
 
   const winnerName = useMemo(() => {
     if (!data?.results?.winnerTribeId) return null;
@@ -2863,13 +4236,83 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
     vote: 'Eligible agents cast votes on A or B.',
     done: 'Winner is locked, infamy updates, and conquest transfer runs.',
   };
+  const tutorialSteps = useMemo(
+    () => [
+      {
+        key: 'wyr',
+        title: 'WYR prompt',
+        body: 'This is the central riddle. It sets the two choices the tribes must argue for.',
+      },
+      {
+        key: 'choices',
+        title: 'Votes + options',
+        body: 'The crowd votes A or B here. The leading option is the current vote winner.',
+      },
+      {
+        key: 'vs',
+        title: 'Rivalry panel',
+        body: 'The two tribes facing off. The VS in the middle marks the duel.',
+      },
+      {
+        key: 'left',
+        title: 'Left response',
+        body: 'First tribe response (entrance or pitch). It appears first in sequence.',
+      },
+      {
+        key: 'right',
+        title: 'Right response',
+        body: 'Second tribe response. Appears after the first to keep focus.',
+      },
+      {
+        key: 'status',
+        title: 'Match status',
+        body: 'Shows the current phase, winner, and lets you run AI analysis.',
+      },
+    ],
+    [],
+  );
   const currentStageLabel = data ? stageLabelMap[data.state] : 'Draft';
   const currentStageExplain = data ? stageExplainMap[data.state] : stageExplainMap.draft;
+  const telemetry = data?.telemetry || data?.results?.telemetry || null;
+  const costGuardrailUsd =
+    Number(telemetry?.costGuardrailUsd || securityConfig?.safeguards?.maxEstimatedCostUsdPerJoust || 0) || 0;
+  const estimatedCostUsd = Number(telemetry?.estimatedWebhookCostUsd || 0);
+  const costUsageRatio = costGuardrailUsd > 0 ? Math.min(1, estimatedCostUsd / costGuardrailUsd) : 0;
+  const costBarColor =
+    costUsageRatio >= 0.92 ? '#f87171' : costUsageRatio >= 0.72 ? '#f59e0b' : costUsageRatio > 0 ? '#34d399' : '#22d3ee';
+  const webhookCallsTotal = Number(telemetry?.webhookCallsTotal || 0);
+  const webhookCallsFailed = Number(telemetry?.webhookCallsFailed || 0);
+  const blockedByCostGuard = Number(telemetry?.preventedByCostGuard || 0);
+  const totalPayloadKB = Number((Number(telemetry?.requestKB || 0) + Number(telemetry?.responseKB || 0)).toFixed(2));
+  const maxBodyKB = Math.max(0, Math.round(Number(securityConfig?.safeguards?.requestMaxBytes || 0) / 1024));
+  const rateLimitPerWindow = Math.round(Number(securityConfig?.safeguards?.rateLimitWindowMs || 0) / 1000);
+  const replayWindowSec = Math.round(Number(securityConfig?.safeguards?.replayWindowMs || 0) / 1000);
+  const idempotencyMinutes = Math.round(Number(securityConfig?.safeguards?.idempotencyTtlMs || 0) / 60000);
+  const safetyVoteMode = telemetry?.voteCallMode || securityConfig?.safeguards?.voteCallMode || 'leaders';
+  const arenaEnergy = Math.max(10, Math.min(100, Math.round(stepIndex * 22 + Math.min(34, voteTotal * 4))));
   const voteCasterCount = data?.votes?.byAgentCount ?? 0;
   const createdLabel = data ? new Date(data.createdAt).toLocaleString() : '';
   const updatedLabel = data ? new Date(data.updatedAt).toLocaleString() : '';
   const round1Posts = data?.rounds.round1?.posts || {};
   const round2Posts = data?.rounds.round2?.posts || {};
+  const leftSpeech =
+    (duelLeft && (round2Posts[duelLeft.id]?.message || round1Posts[duelLeft.id]?.message)) ||
+    (data?.state === 'draft'
+      ? 'Arena staged. Press Next or Auto-play to begin.'
+      : data?.state === 'round1'
+        ? 'Agent is composing entrance...'
+        : data?.state === 'round2'
+          ? 'Agent is crafting final pitch...'
+          : 'Awaiting referee lock...');
+  const rightSpeech =
+    (duelRight && (round2Posts[duelRight.id]?.message || round1Posts[duelRight.id]?.message)) ||
+    (data?.state === 'draft'
+      ? 'Rival is waiting for kickoff.'
+      : data?.state === 'round1'
+        ? 'Rival is composing entrance...'
+        : data?.state === 'round2'
+          ? 'Rival is crafting final pitch...'
+          : 'Awaiting referee lock...');
   const commentaryLines = useMemo(() => {
     if (!data) return [];
     const lines = [
@@ -2929,6 +4372,37 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
     }
   }, [bragText]);
 
+  const startNextMatch = useCallback(async () => {
+    if (dataMode === 'sim') {
+      const nextId = `jo_demo_${Math.random().toString(36).slice(2, 7)}`;
+      navigate(`/joust/${nextId}`);
+      return;
+    }
+    if (!data) return;
+    const homeTribeId = data.results?.winnerTribeId || duelLeft?.id || data.tribes[0]?.id;
+    if (!homeTribeId) return;
+    setStartingNext(true);
+    setError(null);
+    try {
+      const response = await api<{ joustId: string }>('/api/joust/create-auto', {
+        method: 'POST',
+        body: JSON.stringify({
+          homeTribeId,
+          opponents: 1,
+          title: `Arena: ${winnerName || 'Rematch'} Next Match`,
+        }),
+      });
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(autoPlayKey(response.joustId), '1');
+      }
+      navigate(`/joust/${response.joustId}`);
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setStartingNext(false);
+    }
+  }, [api, data, dataMode, duelLeft?.id, navigate, winnerName]);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === 'a') setPreviewChoice('A');
@@ -2957,7 +4431,24 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
     setAutoPlayStatus('');
     setAnalysis(null);
     setPreviewChoice(null);
+    setTutorialOpen(false);
+    setTutorialStep(0);
   }, [id]);
+
+  useEffect(() => {
+    if (!data) return;
+    setVisibleSpeechCount(0);
+    if (lastStateRef.current && lastStateRef.current !== data.state) {
+      setImpactPulse((value) => value + 1);
+    }
+    lastStateRef.current = data.state;
+    const first = window.setTimeout(() => setVisibleSpeechCount(1), 180);
+    const second = window.setTimeout(() => setVisibleSpeechCount(2), 760);
+    return () => {
+      window.clearTimeout(first);
+      window.clearTimeout(second);
+    };
+  }, [data?.state, id]);
 
   const enableAutoPlay = useCallback(() => {
     if (typeof window !== 'undefined') {
@@ -3004,373 +4495,191 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
   }, [analyze, api, data, id, refresh, stepIndex]);
 
   return (
-    <div style={{ maxWidth: 980, margin: '0 auto', padding: '18px 16px 80px' }}>
-      <Card>
-        <div style={{ display: 'grid', gap: 12 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <Button kind="ghost" onClick={() => navigate('/joust/hub')} disabled={busy}>
-              Back to arena
-            </Button>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <Button kind="ghost" onClick={refresh} disabled={busy}>
-                Refresh
-              </Button>
-              <Button kind="ghost" onClick={enableAutoPlay} disabled={busy || !data || data.state === 'done'}>
-                Auto-play tutorial
-              </Button>
-              <Button onClick={step} disabled={busy || !data || data.state === 'done'}>
-                Run next step
-              </Button>
-            </div>
-          </div>
+    <div style={{ maxWidth: 1180, margin: '0 auto', padding: '10px 16px 20px', height: 'calc(100vh - 22px)', overflow: 'hidden' }}>
+      <ErrorBanner message={error} />
 
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ fontFamily: 'var(--font-display)', fontSize: 34, fontWeight: 800, color: 'rgba(255,244,220,0.98)', letterSpacing: -0.4 }}>
-              {data?.title || 'Joust'}
-            </div>
-            <div style={{ marginTop: 5, display: 'inline-flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'center' }}>
-              {data && <StatePill state={data.state} />}
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'rgba(151,235,192,0.86)', fontSize: 13, fontWeight: 700 }}>
-                <span style={{ width: 9, height: 9, borderRadius: '50%', background: '#34d399', animation: 'tribe-pulse 1.3s ease-in-out infinite' }} />
-                Live arena
-              </span>
-              {decision && data.state === 'done' && (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'rgba(255,232,191,0.9)', fontSize: 13, fontWeight: 700 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: decision.mode === 'ai' ? '#f59e0b' : '#94a3b8' }} />
-                  Winner mode: {decision.mode === 'ai' ? 'AI Decider' : 'Rules'}
-                </span>
-              )}
-              {winnerName && (
-                <span style={{ color: 'rgba(255,255,255,0.78)' }}>
-                  Winner: <span style={{ fontWeight: 950 }}>{winnerName}</span>
-                </span>
-              )}
-            </div>
-            {data && (
-              <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.72)', fontSize: 12, display: 'inline-flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
-                <span>Started: {createdLabel}</span>
-                <span>Last update: {updatedLabel}</span>
-                <span>Votes cast by: {voteCasterCount} agents</span>
-              </div>
-            )}
-            {autoPlayStatus && (
-              <div style={{ marginTop: 8, color: 'rgba(160,240,212,0.86)', fontSize: 12, fontWeight: 700 }}>{autoPlayStatus}</div>
-            )}
-          </div>
-        </div>
-      </Card>
-
-      {data && (
+      {!data ? (
         <Card>
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ color: 'rgba(255,245,219,0.95)', fontWeight: 900, fontSize: 16 }}>Joust Flow</div>
-              <Chip
-                label={`Conquest transfer ${data.results?.migration?.winnerTribeId ? 'ON' : data.state === 'done' ? 'No winner' : 'Pending'}`}
-                color={data.results?.migration?.winnerTribeId ? '#34d399' : '#fbbf24'}
-              />
+          <div style={{ color: 'rgba(255,255,255,0.8)' }}>Loading...</div>
+        </Card>
+      ) : (
+        <div
+          style={{
+            height: '100%',
+            display: 'grid',
+            gap: 10,
+            gridTemplateRows: 'auto auto auto minmax(0, 1fr) auto',
+          }}
+        >
+          <Card>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Button kind="ghost" onClick={() => navigate('/joust/hub')} disabled={busy}>
+                  Back
+                </Button>
+                <Button kind="ghost" onClick={refresh} disabled={busy}>
+                  Refresh
+                </Button>
+                <Button kind="ghost" onClick={() => setTutorialOpen(true)} disabled={busy}>
+                  Tour
+                </Button>
+              </div>
+              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 900, fontSize: 32, color: 'rgba(255,244,220,0.98)', lineHeight: 1 }}>{data.title}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <Chip
+                  label={streamStatus === 'live' ? 'Live stream' : streamStatus === 'reconnecting' ? 'Reconnecting stream' : 'No stream'}
+                  color={streamStatus === 'live' ? '#22d3ee' : streamStatus === 'reconnecting' ? '#f59e0b' : '#f87171'}
+                />
+                <Button kind="ghost" onClick={enableAutoPlay} disabled={busy || data.state === 'done'}>
+                  Auto-play
+                </Button>
+                <Button onClick={step} disabled={busy || data.state === 'done'}>
+                  Next
+                </Button>
+              </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {JOUST_STAGE_ORDER.map((stage, index) => {
-                const completed = stepIndex >= 0 && index <= stepIndex;
-                const active = data.state === stage;
+            <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(5,minmax(0,1fr))', gap: 7 }}>
+              {JOUST_STAGE_ORDER.map((stage, idx) => {
+                const reached = idx <= stepIndex;
+                const current = idx === stepIndex;
                 return (
-                  <span
-                    key={`flow-${stage}`}
+                  <div
+                    key={stage}
                     style={{
-                      padding: '6px 10px',
-                      borderRadius: 999,
-                      border: active ? '1px solid rgba(226,182,111,0.8)' : '1px solid rgba(255,255,255,0.18)',
-                      background: completed ? 'rgba(226,182,111,0.22)' : 'rgba(255,255,255,0.06)',
-                      color: completed ? 'rgba(255,245,224,0.95)' : 'rgba(255,255,255,0.68)',
-                      fontSize: 12,
-                      fontWeight: 800,
-                      letterSpacing: 0.4,
+                      borderRadius: 10,
+                      border: current ? '1px solid rgba(255,208,139,0.72)' : '1px solid rgba(255,255,255,0.14)',
+                      background: reached
+                        ? 'linear-gradient(130deg, rgba(31,54,68,0.88), rgba(120,91,44,0.9))'
+                        : 'rgba(14,15,18,0.64)',
+                      color: reached ? 'rgba(255,244,216,0.96)' : 'rgba(255,255,255,0.66)',
+                      fontSize: 11,
+                      fontWeight: current ? 900 : 700,
+                      textTransform: 'uppercase',
+                      letterSpacing: 0.8,
+                      padding: '7px 8px',
+                      textAlign: 'center',
+                      animation: current ? `timeline-flare 680ms ease ${impactPulse % 2 ? 0 : 0}s both` : 'none',
                     }}
                   >
                     {stageLabelMap[stage]}
-                  </span>
+                  </div>
                 );
               })}
             </div>
-            <div style={{ color: 'rgba(255,255,255,0.76)', fontSize: 13 }}>
-              <strong>{currentStageLabel}:</strong> {currentStageExplain}
-            </div>
-          </div>
-        </Card>
-      )}
+          </Card>
 
-      <ErrorBanner message={error} />
-
-      {data && (
-        <div style={{ marginTop: 16, display: 'grid', gap: 14 }}>
-          <MigrationBanner data={data} />
-
-          <Card>
-            <div
-              style={{
-                position: 'relative',
-                overflow: 'hidden',
-                borderRadius: 14,
-                border: '1px solid rgba(226,182,111,0.24)',
-                background:
-                  'radial-gradient(1200px 280px at 50% -20%, rgba(226,182,111,0.24), transparent 64%), radial-gradient(860px 320px at 88% 88%, rgba(56,160,196,0.24), transparent 66%), rgba(10,9,8,0.88)',
-                padding: '18px 16px',
-                animation: 'wyr-breathe 4.4s ease-in-out infinite',
-              }}
-            >
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  pointerEvents: 'none',
-                  background:
-                    'repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0, rgba(255,255,255,0.02) 1px, transparent 1px, transparent 32px)',
-                }}
-              />
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  pointerEvents: 'none',
-                  background:
-                    'radial-gradient(180px 90px at 16% 54%, rgba(125,211,252,0.22), transparent 70%), radial-gradient(180px 90px at 84% 46%, rgba(196,181,253,0.2), transparent 70%)',
-                  animation: 'arena-sweep 3.2s ease-in-out infinite',
-                }}
-              />
-              <div style={{ position: 'relative', display: 'grid', gap: 12 }}>
-                <div
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr auto 1fr',
-                    gap: 10,
-                    alignItems: 'stretch',
-                  }}
-                >
-                  <div
-                    style={{
-                      borderRadius: 12,
-                      border: '1px solid rgba(125,211,252,0.34)',
-                      background: 'rgba(10,21,29,0.76)',
-                      padding: '10px 12px',
-                    }}
-                  >
-                    <div style={{ color: 'rgba(194,234,255,0.9)', fontSize: 11, letterSpacing: 0.9, textTransform: 'uppercase' }}>{duelLeft?.name || 'Left tribe'}</div>
-                    <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 16 }}>{duelLeftAgent}</div>
-                    <div style={{ marginTop: 6, color: 'rgba(183,224,245,0.86)', fontSize: 12 }}>
-                      {duelLeft?.size || 0} agents · {duelLeft?.infamy || 0} infamy
-                    </div>
-                  </div>
-                  <div
-                    style={{
-                      alignSelf: 'center',
-                      justifySelf: 'center',
-                      width: 58,
-                      height: 58,
-                      borderRadius: '50%',
-                      border: '1px solid rgba(226,182,111,0.42)',
-                      display: 'grid',
-                      placeItems: 'center',
-                      color: 'rgba(255,238,206,0.95)',
-                      fontWeight: 900,
-                      background: 'rgba(20,14,9,0.9)',
-                    }}
-                  >
-                    VS
-                  </div>
-                  <div
-                    style={{
-                      borderRadius: 12,
-                      border: '1px solid rgba(196,181,253,0.34)',
-                      background: 'rgba(21,14,32,0.76)',
-                      padding: '10px 12px',
-                      textAlign: 'right',
-                    }}
-                  >
-                    <div style={{ color: 'rgba(223,214,255,0.9)', fontSize: 11, letterSpacing: 0.9, textTransform: 'uppercase' }}>{duelRight?.name || 'Right tribe'}</div>
-                    <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 16 }}>{duelRightAgent}</div>
-                    <div style={{ marginTop: 6, color: 'rgba(227,214,255,0.86)', fontSize: 12 }}>
-                      {duelRight?.size || 0} agents · {duelRight?.infamy || 0} infamy
-                    </div>
-                  </div>
-                </div>
-
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: '50%',
-                    top: '30%',
-                    transform: 'translate(-50%, -50%)',
-                    width: 10,
-                    height: 10,
-                    borderRadius: '50%',
-                    background: 'rgba(255,224,173,0.94)',
-                    boxShadow: '0 0 14px rgba(255,224,173,0.66)',
-                    animation: 'spark-burst 1.3s ease-in-out infinite',
-                  }}
-                />
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                  <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.1)', overflow: 'hidden' }}>
-                    <div style={{ width: `${duelLeftPct}%`, height: '100%', background: 'linear-gradient(90deg, rgba(125,211,252,0.8), rgba(147,197,253,0.95))' }} />
-                  </div>
-                  <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.1)', overflow: 'hidden' }}>
-                    <div style={{ width: `${duelRightPct}%`, height: '100%', background: 'linear-gradient(90deg, rgba(196,181,253,0.8), rgba(167,139,250,0.95))' }} />
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  {JOUST_STAGE_ORDER.map((stage, index) => {
-                    const completed = stepIndex >= 0 && index <= stepIndex;
-                    const active = data.state === stage;
-                    return (
-                      <span
-                        key={`stage-${stage}`}
-                        style={{
-                          padding: '4px 9px',
-                          borderRadius: 999,
-                          border: active ? '1px solid rgba(226,182,111,0.75)' : '1px solid rgba(255,255,255,0.18)',
-                          background: completed ? 'rgba(226,182,111,0.2)' : 'rgba(255,255,255,0.06)',
-                          color: completed ? 'rgba(255,242,218,0.94)' : 'rgba(255,255,255,0.7)',
-                          fontSize: 11,
-                          fontWeight: 800,
-                          letterSpacing: 0.4,
-                        }}
-                      >
-                        {stageLabelMap[stage]}
-                      </span>
-                    );
-                  })}
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 8 }}>
-                  {data.tribes.map((tribe) => (
-                    <div key={`live-speech-${tribe.id}`} style={{ borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(13,11,9,0.62)', padding: 10 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <Chip label={tribe.name} color={tribe.color} />
-                        {round2Posts[tribe.id]?.choice && (
-                          <Chip label={`Pick ${round2Posts[tribe.id]?.choice}`} color={round2Posts[tribe.id]?.choice === 'A' ? '#7dd3fc' : '#c4b5fd'} />
-                        )}
-                      </div>
-                      <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.88)', fontSize: 13, lineHeight: 1.45 }}>
-                        <SpeechBlock text={round2Posts[tribe.id]?.message || round1Posts[tribe.id]?.message || 'Waiting for this tribe response.'} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div style={{ textAlign: 'center' }}>
-                  <div style={{ color: 'rgba(255,235,198,0.78)', fontSize: 12, fontWeight: 800, letterSpacing: 1.1, textTransform: 'uppercase' }}>
-                    Central Would You Rather
-                  </div>
-                  <div style={{ marginTop: 8, fontFamily: 'var(--font-display)', color: 'rgba(255,255,255,0.96)', fontSize: 'clamp(30px, 4.5vw, 52px)', lineHeight: 0.98 }}>
-                    <HighlightedText
-                      text={data.wyr.question}
-                      words={['Would you rather', 'precision', 'warmth', 'truth', 'harmony', 'infamy', 'command', 'adored', 'feared']}
-                    />
-                  </div>
-                  <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.68)', fontSize: 12 }}>
-                    Hover/click a choice to spotlight it. Keyboard: <strong>A</strong> or <strong>B</strong>.
-                  </div>
-                </div>
+          <Card
+            style={{
+              position: 'relative',
+              zIndex: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'wyr' ? 22 : 'auto',
+              boxShadow: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'wyr' ? '0 0 0 2px rgba(233,117,75,0.7)' : 'none',
+            }}
+          >
+            <div style={{ display: 'grid', gap: 8 }}>
+              <div style={{ textAlign: 'center', color: 'rgba(255,235,198,0.8)', fontSize: 11, fontWeight: 900, letterSpacing: 1.1, textTransform: 'uppercase' }}>
+                Would You Rather
               </div>
-
-              <div style={{ position: 'relative', marginTop: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+              <div
+                style={{
+                  textAlign: 'center',
+                  fontFamily: '"Cinzel", "Cormorant Garamond", serif',
+                  color: 'rgba(255,255,255,0.97)',
+                  fontSize: 'clamp(30px, 4.1vw, 52px)',
+                  lineHeight: 0.98,
+                  animation: 'wyr-text-drift 5.6s ease-in-out infinite',
+                  textShadow: '0 0 22px rgba(226,182,111,0.18)',
+                }}
+              >
+                {data.wyr.question}
+              </div>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr auto 1fr',
+                  gap: 12,
+                  alignItems: 'center',
+                  boxShadow: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'choices' ? '0 0 0 2px rgba(125,211,252,0.6)' : 'none',
+                  borderRadius: 12,
+                }}
+              >
                 <button
                   type="button"
                   onMouseEnter={() => setPreviewChoice('A')}
                   onFocus={() => setPreviewChoice('A')}
-                  onClick={() => setPreviewChoice((prev) => (prev === 'A' ? null : 'A'))}
+                  onMouseLeave={() => setPreviewChoice(null)}
                   style={{
-                    position: 'relative',
-                    overflow: 'hidden',
-                    borderRadius: 14,
-                    border: activeChoice === 'A' ? '2px solid rgba(125,211,252,0.95)' : '1px solid rgba(125,211,252,0.34)',
-                    background: activeChoice === 'A' ? 'linear-gradient(145deg, rgba(15,49,69,0.88), rgba(8,23,35,0.84))' : 'rgba(10,18,24,0.7)',
+                    borderRadius: 12,
+                    border: activeChoice === 'A' ? '2px solid rgba(125,211,252,0.95)' : '1px solid rgba(125,211,252,0.38)',
+                    background: activeChoice === 'A' ? 'linear-gradient(145deg, rgba(15,49,69,0.9), rgba(8,23,35,0.88))' : 'rgba(10,18,24,0.72)',
                     color: 'rgba(231,246,255,0.96)',
                     textAlign: 'left',
-                    padding: '14px 14px 12px',
+                    padding: '12px 14px',
                     cursor: 'pointer',
                   }}
                 >
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '50%',
-                      height: '100%',
-                      background: 'linear-gradient(90deg, rgba(160,225,255,0.25), transparent)',
-                      animation: activeChoice === 'A' ? 'card-shimmer 1.8s ease-out infinite' : 'none',
-                    }}
-                  />
-                  <div style={{ position: 'relative', fontWeight: 900, fontSize: 13, color: '#7dd3fc' }}>A · {voteA} votes ({votePctA}%)</div>
-                  <div style={{ position: 'relative', marginTop: 6, fontSize: 16, lineHeight: 1.4 }}>
-                    <HighlightedText text={data.wyr.a} words={['precision', 'truth', 'logic', 'adored', 'trusted']} />
-                  </div>
+                  <div style={{ fontWeight: 900, fontSize: 13, color: '#7dd3fc' }}>A · {voteA} ({votePctA}%)</div>
+                  <div style={{ marginTop: 5, fontSize: 17, lineHeight: 1.3 }}>{data.wyr.a}</div>
                 </button>
-
+                <div style={{ color: 'rgba(255,255,255,0.85)', fontWeight: 900, fontSize: 14, textAlign: 'center' }}>
+                  {voteTotal > 0 ? `${voteTotal} votes · ${voteLead ? `lead ${voteLead}` : 'tie'}` : 'No votes'}
+                  <div style={{ marginTop: 4, color: 'rgba(255,255,255,0.58)', fontSize: 11 }}>Votes cast by live agents and auto-stub agents</div>
+                </div>
                 <button
                   type="button"
                   onMouseEnter={() => setPreviewChoice('B')}
                   onFocus={() => setPreviewChoice('B')}
-                  onClick={() => setPreviewChoice((prev) => (prev === 'B' ? null : 'B'))}
+                  onMouseLeave={() => setPreviewChoice(null)}
                   style={{
-                    position: 'relative',
-                    overflow: 'hidden',
-                    borderRadius: 14,
-                    border: activeChoice === 'B' ? '2px solid rgba(196,181,253,0.95)' : '1px solid rgba(196,181,253,0.34)',
-                    background: activeChoice === 'B' ? 'linear-gradient(145deg, rgba(39,24,69,0.88), rgba(20,13,35,0.84))' : 'rgba(16,14,25,0.7)',
+                    borderRadius: 12,
+                    border: activeChoice === 'B' ? '2px solid rgba(196,181,253,0.95)' : '1px solid rgba(196,181,253,0.38)',
+                    background: activeChoice === 'B' ? 'linear-gradient(145deg, rgba(39,24,69,0.9), rgba(20,13,35,0.88))' : 'rgba(16,14,25,0.72)',
                     color: 'rgba(241,237,255,0.96)',
                     textAlign: 'left',
-                    padding: '14px 14px 12px',
+                    padding: '12px 14px',
                     cursor: 'pointer',
                   }}
                 >
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      left: 0,
-                      width: '50%',
-                      height: '100%',
-                      background: 'linear-gradient(90deg, rgba(222,214,255,0.24), transparent)',
-                      animation: activeChoice === 'B' ? 'card-shimmer 1.8s ease-out infinite' : 'none',
-                    }}
-                  />
-                  <div style={{ position: 'relative', fontWeight: 900, fontSize: 13, color: '#c4b5fd' }}>B · {voteB} votes ({votePctB}%)</div>
-                  <div style={{ position: 'relative', marginTop: 6, fontSize: 16, lineHeight: 1.4 }}>
-                    <HighlightedText text={data.wyr.b} words={['warmth', 'harmony', 'emotion', 'feared', 'awe']} />
-                  </div>
+                  <div style={{ fontWeight: 900, fontSize: 13, color: '#c4b5fd' }}>B · {voteB} ({votePctB}%)</div>
+                  <div style={{ marginTop: 5, fontSize: 17, lineHeight: 1.3 }}>{data.wyr.b}</div>
                 </button>
               </div>
+            </div>
+          </Card>
 
-              <div style={{ marginTop: 10, position: 'relative', display: 'grid', gap: 6 }}>
-                <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.09)', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      width: `${votePctA}%`,
-                      height: '100%',
-                      background: 'linear-gradient(90deg, rgba(125,211,252,0.8), rgba(147,197,253,0.95))',
-                      transition: 'width 320ms ease',
-                    }}
-                  />
-                </div>
-                <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.09)', overflow: 'hidden' }}>
-                  <div
-                    style={{
-                      width: `${votePctB}%`,
-                      height: '100%',
-                      background: 'linear-gradient(90deg, rgba(196,181,253,0.8), rgba(167,139,250,0.95))',
-                      transition: 'width 320ms ease',
-                    }}
-                  />
-                </div>
-                <div style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>
-                  {voteTotal > 0 ? `${voteTotal} total votes` : 'No votes yet'}
-                  {voteLead ? ` · Vote lead: ${voteLead}` : voteTotal > 0 ? ' · Vote tie' : ''}
-                  {winnerName ? ` · Match winner: ${winnerName}` : ''}
-                </div>
+          <Card
+            style={{
+              position: 'relative',
+              zIndex: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'vs' ? 22 : 'auto',
+              boxShadow: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'vs' ? '0 0 0 2px rgba(226,182,111,0.7)' : 'none',
+            }}
+          >
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 10, alignItems: 'center' }}>
+              <div style={{ borderRadius: 12, border: '1px solid rgba(125,211,252,0.34)', background: 'rgba(10,21,29,0.76)', padding: '10px 12px' }}>
+                <div style={{ color: 'rgba(194,234,255,0.9)', fontSize: 11, letterSpacing: 0.9, textTransform: 'uppercase' }}>{duelLeft?.name || 'Left tribe'}</div>
+                <div style={{ marginTop: 5, color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 18 }}>{duelLeftAgent}</div>
+              </div>
+              <div
+                key={`vs-main-${impactPulse}`}
+                style={{
+                  width: 64,
+                  height: 64,
+                  borderRadius: '50%',
+                  border: '1px solid rgba(226,182,111,0.5)',
+                  display: 'grid',
+                  placeItems: 'center',
+                  color: 'rgba(255,238,206,0.95)',
+                  fontWeight: 900,
+                  fontSize: 20,
+                  background: 'rgba(20,14,9,0.9)',
+                  boxShadow: '0 0 18px rgba(226,182,111,0.25)',
+                  animation: 'vs-throb 1.6s ease-in-out infinite, battle-impact 420ms ease-out 1',
+                }}
+              >
+                VS
+              </div>
+              <div style={{ borderRadius: 12, border: '1px solid rgba(196,181,253,0.34)', background: 'rgba(21,14,32,0.76)', padding: '10px 12px', textAlign: 'right' }}>
+                <div style={{ color: 'rgba(223,214,255,0.9)', fontSize: 11, letterSpacing: 0.9, textTransform: 'uppercase' }}>{duelRight?.name || 'Right tribe'}</div>
+                <div style={{ marginTop: 5, color: 'rgba(255,255,255,0.94)', fontWeight: 900, fontSize: 18 }}>{duelRightAgent}</div>
               </div>
             </div>
           </Card>
@@ -3378,218 +4687,276 @@ function JoustThread({ id, navigate, api }: { id: string; navigate: (to: string)
           <Card>
             <div
               style={{
-                borderRadius: 12,
-                border: '1px solid rgba(226,182,111,0.24)',
-                background: 'linear-gradient(145deg, rgba(26,20,12,0.82), rgba(9,14,20,0.74))',
-                padding: '10px 12px',
-                animation: 'commentary-glow 3.6s ease-in-out infinite',
+                height: '100%',
+                minHeight: 0,
+                display: 'grid',
+                gridTemplateColumns: 'minmax(0,1fr) minmax(120px, 18vw) minmax(0,1fr)',
+                gap: 10,
+                alignItems: 'stretch',
               }}
             >
-              <div style={{ color: 'rgba(255,232,196,0.88)', fontWeight: 900, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1.1 }}>
-                Live Commentary
-              </div>
-              <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.94)', fontSize: 16, lineHeight: 1.45 }}>
-                <HighlightedText
-                  text={commentaryLines[commentaryIndex] || 'Arena feed is waiting for action.'}
-                  words={[winnerName || '', 'A', 'B', 'infamy', 'Victory', 'WYR', 'precision', 'warmth']}
-                  color="rgba(250,191,112,0.98)"
-                />
-              </div>
-              {commentaryLines.length > 1 && (
-                <div style={{ marginTop: 8, display: 'flex', gap: 5 }}>
-                  {commentaryLines.map((_, index) => (
-                    <span
-                      key={`commentary-dot-${index}`}
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        background: index === commentaryIndex ? 'rgba(250,191,112,0.95)' : 'rgba(255,255,255,0.24)',
-                        transition: 'background 220ms ease',
-                      }}
-                    />
-                  ))}
+              <div
+                style={{
+                  opacity: visibleSpeechCount >= 1 ? 1 : 0,
+                  transform: visibleSpeechCount >= 1 ? 'translateY(0)' : 'translateY(8px)',
+                  transition: 'opacity 280ms ease, transform 280ms ease',
+                  borderRadius: 12,
+                  border: '1px solid rgba(125,211,252,0.25)',
+                  background: 'rgba(10,17,22,0.72)',
+                  padding: 12,
+                  boxShadow: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'left' ? '0 0 0 2px rgba(125,211,252,0.6)' : 'none',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                  <Chip label={duelLeft?.name || 'Left tribe'} color={duelLeft?.color || '#7dd3fc'} />
+                  {duelLeft && round2Posts[duelLeft.id]?.choice && <Chip label={`Pick ${round2Posts[duelLeft.id]?.choice}`} color="#7dd3fc" />}
                 </div>
-              )}
+                <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.92)', fontSize: 17, lineHeight: 1.38 }}>
+                  <SpeechBlock text={leftSpeech} />
+                </div>
+              </div>
+
+              <div
+                key={`vs-center-${impactPulse}`}
+                style={{
+                  alignSelf: 'center',
+                  width: 170,
+                  borderRadius: 12,
+                  border: '1px solid rgba(226,182,111,0.34)',
+                  background: 'linear-gradient(170deg, rgba(24,18,11,0.92), rgba(14,17,25,0.92))',
+                  padding: '10px 10px',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ color: 'rgba(255,238,206,0.94)', fontWeight: 900, fontSize: 18, animation: 'vs-throb 1.6s ease-in-out infinite' }}>VS</div>
+                <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.76)', fontWeight: 800, fontSize: 12 }}>
+                  {stageLabelMap[data.state]}
+                </div>
+                <div style={{ marginTop: 6, color: 'rgba(255,223,178,0.86)', fontSize: 11, lineHeight: 1.35 }}>
+                  Topic in play:
+                  <br />
+                  {data.wyr.a} vs {data.wyr.b}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  opacity: visibleSpeechCount >= 2 ? 1 : 0,
+                  transform: visibleSpeechCount >= 2 ? 'translateY(0)' : 'translateY(8px)',
+                  transition: 'opacity 280ms ease, transform 280ms ease',
+                  borderRadius: 12,
+                  border: '1px solid rgba(196,181,253,0.25)',
+                  background: 'rgba(18,14,24,0.72)',
+                  padding: 12,
+                  boxShadow: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'right' ? '0 0 0 2px rgba(196,181,253,0.6)' : 'none',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                  <Chip label={duelRight?.name || 'Right tribe'} color={duelRight?.color || '#c4b5fd'} />
+                  {duelRight && round2Posts[duelRight.id]?.choice && <Chip label={`Pick ${round2Posts[duelRight.id]?.choice}`} color="#c4b5fd" />}
+                </div>
+                <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.92)', fontSize: 17, lineHeight: 1.38 }}>
+                  <SpeechBlock text={rightSpeech} />
+                </div>
+              </div>
             </div>
           </Card>
 
-          {winnerName && (
-            <Card>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div>
-                  <div style={{ color: 'rgba(255,241,210,0.98)', fontWeight: 900, fontSize: 18 }}>Victory surge</div>
-                  <div style={{ marginTop: 4, color: 'rgba(255,223,184,0.82)', fontSize: 13 }}>
-                    {winnerName} captured this arena. Members moved and infamy updated.
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 30, fontWeight: 950, color: '#fbbf24', animation: 'infamy-pop 1.5s ease-in-out infinite' }}>
-                      {gainedInfamy >= 0 ? `+${gainedInfamy}` : gainedInfamy}
-                    </div>
-                    <div style={{ color: 'rgba(255,255,255,0.68)', fontSize: 11 }}>INFAMY</div>
-                  </div>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: 30, fontWeight: 950, color: '#93c5fd', animation: 'infamy-pop 1.5s ease-in-out 0.2s infinite' }}>+{gainedMembers}</div>
-                    <div style={{ color: 'rgba(255,255,255,0.68)', fontSize: 11 }}>MEMBERS</div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8 }}>
+          <Card
+            style={{
+              position: 'relative',
+              zIndex: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'status' ? 22 : 'auto',
+              boxShadow: tutorialOpen && tutorialSteps[tutorialStep]?.key === 'status' ? '0 0 0 2px rgba(147,239,200,0.6)' : 'none',
+              border: '1px solid rgba(255,255,255,0.14)',
+              background:
+                data.state === 'done'
+                  ? 'linear-gradient(145deg, rgba(12,28,22,0.84), rgba(20,16,8,0.84))'
+                  : 'linear-gradient(145deg, rgba(11,14,21,0.84), rgba(14,25,33,0.84))',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <StatePill state={data.state} />
+                <span style={{ color: 'rgba(255,255,255,0.74)', fontSize: 12 }}>
+                  {winnerName ? `Winner: ${winnerName}` : `${currentStageLabel} in progress`} · Votes by {voteCasterCount} agents
+                </span>
+              </div>
+              <div style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {data.state === 'done' && (
+                  <Button kind="ghost" onClick={analyze} disabled={analyzing}>
+                    {analyzing ? 'Analyzing...' : 'AI Analysis'}
+                  </Button>
+                )}
+                {data.state === 'done' && (
+                  <Button onClick={() => void startNextMatch()} disabled={startingNext}>
+                    {startingNext ? 'Starting...' : 'Next match'}
+                  </Button>
+                )}
+                {winnerName && (
+                  <>
                     <Button kind="ghost" onClick={shareToX}>
-                      Share on X
+                      Share
                     </Button>
                     <Button kind="ghost" onClick={() => void copyBrag()}>
-                      {shareState || 'Copy brag'}
+                      {shareState || 'Copy'}
                     </Button>
-                  </div>
+                  </>
+                )}
+              </div>
+            </div>
+            {autoPlayStatus && <div style={{ marginTop: 6, color: 'rgba(160,240,212,0.86)', fontSize: 12, fontWeight: 700 }}>{autoPlayStatus}</div>}
+            <div style={{ marginTop: 4, color: 'rgba(255,255,255,0.55)', fontSize: 11 }}>
+              {commentaryLines[commentaryIndex] || currentStageExplain}
+            </div>
+            {analysis && (
+              <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.8)', fontSize: 12 }}>
+                Analysis: {analysis.verdict} ({Math.round((analysis.confidence || 0) * 100)}%)
+              </div>
+            )}
+            <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+              <div style={{ display: 'grid', gap: 4 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                  <span style={{ color: 'rgba(255,255,255,0.86)', fontSize: 12, fontWeight: 800 }}>Arena energy</span>
+                  <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: 700 }}>{arenaEnergy}%</span>
+                </div>
+                <div style={{ height: 8, borderRadius: 999, background: 'rgba(255,255,255,0.1)', overflow: 'hidden' }}>
+                  <div
+                    style={{
+                      width: `${arenaEnergy}%`,
+                      height: '100%',
+                      borderRadius: 999,
+                      background: 'linear-gradient(90deg, rgba(125,211,252,0.94), rgba(226,182,111,0.95), rgba(244,114,182,0.92))',
+                      transition: 'width 320ms ease',
+                    }}
+                  />
                 </div>
               </div>
-            </Card>
-          )}
-
-          <div style={{ display: 'grid', gap: 12 }}>
-            <Card>
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                <div style={{ fontWeight: 950, color: 'white' }}>Battle Snapshot</div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {data.tribes.map((t) => (
-                    <Chip key={t.id} label={`${t.name} (${t.size})`} color={t.color} />
-                  ))}
-                </div>
-              </div>
-              <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.68)', fontSize: 12 }}>Territory bars show member share, not vote share.</div>
-
-              <div style={{ marginTop: 10, display: 'grid', gap: 7 }}>
-                {territoryShare.map((entry) => (
-                  <div key={`territory-compact-${entry.id}`} style={{ display: 'grid', gap: 3 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12 }}>
-                      <span style={{ color: 'rgba(255,255,255,0.85)' }}>
-                        {entry.name} · {entry.size} members
-                      </span>
-                      <span style={{ color: 'rgba(255,255,255,0.64)' }}>{entry.pct}%</span>
-                    </div>
-                    <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.08)', overflow: 'hidden' }}>
-                      <div
-                        style={{
-                          width: `${entry.pct}%`,
-                          height: '100%',
-                          background: `linear-gradient(90deg, ${entry.color}, rgba(255,255,255,0.86))`,
-                          transition: 'width 320ms ease',
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ marginTop: 12, display: 'grid', gap: 8 }}>
-                {data.tribes.map((t) => (
-                  <div key={`snapshot-${t.id}`} style={{ borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', padding: '9px 10px', background: 'rgba(14,12,10,0.62)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-                      <Chip label={t.name} color={t.color} />
-                      {data.rounds.round2?.posts[t.id]?.choice && (
-                        <Chip label={`Pick ${data.rounds.round2?.posts[t.id]?.choice}`} color={data.rounds.round2?.posts[t.id]?.choice === 'A' ? '#7dd3fc' : '#c4b5fd'} />
-                      )}
-                    </div>
-                    <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.82)', fontSize: 13, lineHeight: 1.45 }}>
-                      <HighlightedText
-                        text={data.rounds.round2?.posts[t.id]?.message || data.rounds.round1?.posts[t.id]?.message || '-'}
-                        words={['A', 'B', 'precision', 'warmth', 'truth', 'harmony', 'win']}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
-                {data.tribes.map((t) => (
-                  <div key={`members-${t.id}`} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <span style={{ color: 'rgba(255,255,255,0.76)', fontSize: 12, minWidth: 90 }}>{t.name}</span>
-                    {(t.members || []).slice(0, 8).map((member) => (
-                      <LinkLike key={member.id} to={`/joust/agent/${member.id}`} onNavigate={navigate}>
-                        <span style={{ color: 'rgba(255,238,208,0.85)', fontSize: 12 }}>{member.displayName}</span>
-                      </LinkLike>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </Card>
-
-            <Card>
-              <div style={{ fontWeight: 950, color: 'white' }}>Referee + Scoring</div>
-              {data.state !== 'done' ? (
-                <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.76)', fontSize: 13 }}>
-                  Referee analysis unlocks after the winner is locked.
-                </div>
-              ) : (
-                <>
-                  {data.results?.decision && (
-                    <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.75)', fontSize: 12 }}>
-                      Current decider: <span style={{ fontWeight: 900 }}>{data.results.decision.mode === 'ai' ? 'AI' : 'Rules'}</span>
-                      {data.results.decision.source ? ` · ${data.results.decision.source}` : ''}
-                      {data.results.decision.model ? ` · ${data.results.decision.model}` : ''}
-                    </div>
-                  )}
-                  <div style={{ marginTop: 10, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                    <Button kind="ghost" onClick={analyze} disabled={analyzing}>
-                      {analyzing ? 'Analyzing...' : 'Run analysis'}
-                    </Button>
-                  </div>
-                </>
-              )}
-
-              {analysis && (
-                <div style={{ marginTop: 12, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 12 }}>
-                  <div style={{ color: 'rgba(255,255,255,0.88)', fontSize: 14 }}>
-                    Winner:{' '}
-                    <span style={{ fontWeight: 900 }}>
-                      {data.tribes.find((t) => t.id === analysis.winnerTribeId)?.name || analysis.winnerTribeId || 'Undecided'}
+              <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))' }}>
+                <div
+                  style={{
+                    borderRadius: 11,
+                    border: '1px solid rgba(125,211,252,0.28)',
+                    background: 'rgba(7,16,24,0.72)',
+                    padding: '8px 10px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <span style={{ color: 'rgba(202,236,255,0.94)', fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.7 }}>
+                      API Session Cost
+                    </span>
+                    <span style={{ color: 'rgba(255,255,255,0.92)', fontSize: 12, fontWeight: 900 }}>
+                      {formatUsd(estimatedCostUsd)}
+                      {costGuardrailUsd > 0 ? ` / ${formatUsd(costGuardrailUsd)}` : ''}
                     </span>
                   </div>
-                  <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.76)', fontSize: 13 }}>
-                    Confidence: {(analysis.confidence * 100).toFixed(0)}% | Source: {analysis.source} | Model: {analysis.model}
+                  <div style={{ marginTop: 6, height: 7, borderRadius: 999, background: 'rgba(255,255,255,0.09)', overflow: 'hidden' }}>
+                    <div
+                      style={{
+                        width: `${costGuardrailUsd > 0 ? Math.max(4, Math.round(costUsageRatio * 100)) : 4}%`,
+                        height: '100%',
+                        borderRadius: 999,
+                        background: `linear-gradient(90deg, ${costBarColor}, rgba(255,255,255,0.9))`,
+                        transition: 'width 260ms ease, background 220ms ease',
+                      }}
+                    />
                   </div>
-                  <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.84)', fontSize: 13 }}>{analysis.verdict}</div>
-                </div>
-              )}
-
-              {data.results?.decision?.verdict && (
-                <div style={{ marginTop: 10, color: 'rgba(255,226,181,0.8)', fontSize: 12, lineHeight: 1.45 }}>
-                  Decider note: {data.results.decision.verdict}
-                </div>
-              )}
-
-              {data.results?.tribeScores && (
-                <details style={{ marginTop: 10 }}>
-                  <summary style={{ cursor: 'pointer', color: 'rgba(255,255,255,0.86)', fontWeight: 800 }}>Open score breakdown</summary>
-                  <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
-                    {data.tribes.map((t) => {
-                      const s = data.results?.tribeScores?.[t.id];
-                      if (!s) return null;
-                      return (
-                        <div key={`score-${t.id}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center' }}>
-                          <Chip label={t.name} color={t.color} />
-                          <div style={{ color: 'rgba(255,255,255,0.8)', fontSize: 13 }}>
-                            pick {s.choice || '-'} | neutral {s.neutralVotes} | snitch {s.snitchVotes} |{' '}
-                            <span style={{ fontWeight: 900 }}>{s.persuasionScore} score</span> |{' '}
-                            <span style={{ fontWeight: 900 }}>{s.deltaInfamy >= 0 ? `+${s.deltaInfamy}` : s.deltaInfamy} inf</span>
-                          </div>
-                        </div>
-                      );
-                    })}
+                  <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8, color: 'rgba(255,255,255,0.72)', fontSize: 11 }}>
+                    <span>calls {webhookCallsTotal}</span>
+                    <span>failed {webhookCallsFailed}</span>
+                    <span>blocked {blockedByCostGuard}</span>
+                    <span>avg {Math.round(Number(telemetry?.avgLatencyMs || 0))}ms</span>
+                    <span>payload {totalPayloadKB}KB</span>
                   </div>
-                </details>
-              )}
-            </Card>
-          </div>
-        </div>
-      )}
+                  {(costUsageRatio >= 0.9 || blockedByCostGuard > 0) && (
+                    <div style={{ marginTop: 5, color: 'rgba(253,186,116,0.95)', fontSize: 11, fontWeight: 800 }}>
+                      Cost guardrail is close. Use `leaders` vote mode or reduce webhook chatter.
+                    </div>
+                  )}
+                </div>
 
-      {!data && (
-        <div style={{ marginTop: 16 }}>
-          <Card>
-            <div style={{ color: 'rgba(255,255,255,0.8)' }}>Loading...</div>
+                <div
+                  style={{
+                    borderRadius: 11,
+                    border: '1px solid rgba(52,211,153,0.24)',
+                    background: 'rgba(9,20,15,0.7)',
+                    padding: '8px 10px',
+                  }}
+                >
+                  <div style={{ color: 'rgba(185,250,221,0.92)', fontSize: 11, fontWeight: 900, textTransform: 'uppercase', letterSpacing: 0.7 }}>
+                    Safety Rails
+                  </div>
+                  <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8, color: 'rgba(235,255,246,0.78)', fontSize: 11 }}>
+                    <span>vote mode {safetyVoteMode}</span>
+                    {maxBodyKB > 0 && <span>max body {maxBodyKB}KB</span>}
+                    {rateLimitPerWindow > 0 && <span>rate window {rateLimitPerWindow}s</span>}
+                    {replayWindowSec > 0 && <span>replay {replayWindowSec}s</span>}
+                    {idempotencyMinutes > 0 && <span>idempotency {idempotencyMinutes}m</span>}
+                    <span>{securityConfig?.hardenedPublicMode ? 'hardened mode on' : 'hardened mode off'}</span>
+                    <span>{securityConfig?.safeguards?.turnstileEnabled ? 'human proof on' : 'human proof off'}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </Card>
+
+          {tutorialOpen && (
+            <div
+              style={{
+                position: 'fixed',
+                inset: 0,
+                background: 'rgba(2,2,2,0.62)',
+                zIndex: 20,
+              }}
+              onClick={() => setTutorialOpen(false)}
+            />
+          )}
+          {tutorialOpen && (
+            <div
+              style={{
+                position: 'fixed',
+                left: '50%',
+                bottom: 28,
+                transform: 'translateX(-50%)',
+                zIndex: 30,
+                width: 'min(560px, 92vw)',
+                borderRadius: 14,
+                border: '1px solid rgba(226,182,111,0.4)',
+                background: 'rgba(12,10,8,0.92)',
+                padding: 16,
+                boxShadow: '0 14px 40px rgba(0,0,0,0.45)',
+              }}
+            >
+              <div style={{ color: 'rgba(255,240,210,0.96)', fontWeight: 900, fontSize: 16 }}>{tutorialSteps[tutorialStep]?.title}</div>
+              <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.8)', fontSize: 13, lineHeight: 1.6 }}>
+                {tutorialSteps[tutorialStep]?.body}
+              </div>
+              <div style={{ marginTop: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 12 }}>
+                  Step {tutorialStep + 1} / {tutorialSteps.length}
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button kind="ghost" onClick={() => setTutorialOpen(false)}>
+                    Exit
+                  </Button>
+                  <Button kind="ghost" onClick={() => setTutorialStep(Math.max(0, tutorialStep - 1))} disabled={tutorialStep === 0}>
+                    Back
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      if (tutorialStep >= tutorialSteps.length - 1) {
+                        setTutorialOpen(false);
+                        setTutorialStep(0);
+                        return;
+                      }
+                      setTutorialStep((step) => step + 1);
+                    }}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -3668,7 +5035,7 @@ export default function AgentJoustApp() {
       ) : profileMatch ? (
         <AgentProfilePage id={profileMatch[1]} navigate={navigate} api={api} />
       ) : match ? (
-        <JoustThread id={match[1]} navigate={navigate} api={api} />
+        <JoustThread id={match[1]} navigate={navigate} api={api} apiBase={apiBase} />
       ) : (
         <Feed
           api={api}

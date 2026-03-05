@@ -35,6 +35,7 @@ function hydrateAgent(row) {
     verifiedProvider: row.verified_provider || null,
     verifiedSubject: row.verified_subject || null,
     verifiedProfile: safeJsonParse(row.verified_profile_json, null),
+    profile: safeJsonParse(row.agent_profile_json, null),
   };
 }
 
@@ -49,6 +50,28 @@ function hydrateTribe(row) {
     infamy: Number(row.infamy || 0),
     wins: Number(row.wins || 0),
     losses: Number(row.losses || 0),
+  };
+}
+
+function hydrateRiddle(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    question: row.question,
+    a: row.option_a,
+    b: row.option_b,
+    creatorAgentId: row.creator_agent_id,
+    ownerAgentId: row.owner_agent_id,
+    listPriceCredits: Number(row.list_price_credits || 0),
+    creatorRoyaltyBps: Number(row.creator_royalty_bps || 0),
+    totalUses: Number(row.total_uses || 0),
+    totalVolumeCredits: Number(row.total_volume_credits || 0),
+    ownerEarningsCredits: Number(row.owner_earnings_credits || 0),
+    creatorEarningsCredits: Number(row.creator_earnings_credits || 0),
+    isActive: Boolean(row.is_active),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
   };
 }
 
@@ -82,7 +105,8 @@ async function ensureSchema(pool) {
       losses INTEGER NOT NULL DEFAULT 0,
       verified_provider TEXT,
       verified_subject TEXT,
-      verified_profile_json JSONB
+      verified_profile_json JSONB,
+      agent_profile_json JSONB
     );
 
     CREATE TABLE IF NOT EXISTS tribes (
@@ -117,6 +141,9 @@ async function ensureSchema(pool) {
       wyr_question TEXT NOT NULL,
       wyr_a TEXT NOT NULL,
       wyr_b TEXT NOT NULL,
+      riddle_id TEXT,
+      sponsor_agent_id TEXT,
+      stake_credits INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       results_json JSONB
@@ -151,7 +178,45 @@ async function ensureSchema(pool) {
     CREATE INDEX IF NOT EXISTS idx_jousts_updated_at ON jousts(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_round_posts_joust_id ON round_posts(joust_id);
     CREATE INDEX IF NOT EXISTS idx_votes_joust_id ON votes(joust_id);
+
+    CREATE TABLE IF NOT EXISTS wallets (
+      agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+      balance_credits INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS riddles (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      question TEXT NOT NULL,
+      option_a TEXT NOT NULL,
+      option_b TEXT NOT NULL,
+      creator_agent_id TEXT NOT NULL REFERENCES agents(id),
+      owner_agent_id TEXT NOT NULL REFERENCES agents(id),
+      list_price_credits INTEGER NOT NULL,
+      creator_royalty_bps INTEGER NOT NULL,
+      total_uses INTEGER NOT NULL DEFAULT 0,
+      total_volume_credits INTEGER NOT NULL DEFAULT 0,
+      owner_earnings_credits INTEGER NOT NULL DEFAULT 0,
+      creator_earnings_credits INTEGER NOT NULL DEFAULT 0,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS economy_transactions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+      tx_type TEXT NOT NULL,
+      amount_credits INTEGER NOT NULL,
+      meta_json JSONB,
+      created_at TEXT NOT NULL
+    );
   `);
+  await pool.query(`ALTER TABLE agents ADD COLUMN IF NOT EXISTS agent_profile_json JSONB`);
+  await pool.query(`ALTER TABLE jousts ADD COLUMN IF NOT EXISTS riddle_id TEXT`);
+  await pool.query(`ALTER TABLE jousts ADD COLUMN IF NOT EXISTS sponsor_agent_id TEXT`);
+  await pool.query(`ALTER TABLE jousts ADD COLUMN IF NOT EXISTS stake_credits INTEGER NOT NULL DEFAULT 0`);
 }
 
 async function withTransaction(pool, fn) {
@@ -255,6 +320,7 @@ export async function openJoustPostgresStore({ connectionString }) {
   }
 
   async function createAgent(agent) {
+    const createdAt = agent.createdAt || nowIso();
     await pool.query(
       `
       INSERT INTO agents (
@@ -267,11 +333,20 @@ export async function openJoustPostgresStore({ connectionString }) {
         agent.callbackUrl,
         agent.secret,
         JSON.stringify(agent.vibeTags || []),
-        agent.createdAt || nowIso(),
+        createdAt,
         Number(agent.infamy ?? 100),
         Number(agent.wins ?? 0),
         Number(agent.losses ?? 0),
       ],
+    );
+    await pool.query(
+      `
+      INSERT INTO wallets (agent_id, balance_credits, updated_at)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (agent_id)
+      DO NOTHING
+    `,
+      [agent.id, Number(agent.startingCredits ?? 1000), createdAt],
     );
   }
 
@@ -334,8 +409,8 @@ export async function openJoustPostgresStore({ connectionString }) {
       await client.query(
         `
         INSERT INTO jousts (
-          id, title, state, wyr_question, wyr_a, wyr_b, created_at, updated_at, results_json
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+          id, title, state, wyr_question, wyr_a, wyr_b, riddle_id, sponsor_agent_id, stake_credits, created_at, updated_at, results_json
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
       `,
         [
           joust.id,
@@ -344,6 +419,9 @@ export async function openJoustPostgresStore({ connectionString }) {
           joust.wyr.question,
           joust.wyr.a,
           joust.wyr.b,
+          joust.riddleId || null,
+          joust.sponsorAgentId || null,
+          Number(joust.stakeCredits || 0),
           joust.createdAt || nowIso(),
           joust.updatedAt || nowIso(),
           joust.resultsJson ? JSON.stringify(joust.resultsJson) : null,
@@ -401,6 +479,9 @@ export async function openJoustPostgresStore({ connectionString }) {
         a: row.wyr_a,
         b: row.wyr_b,
       },
+      riddleId: row.riddle_id || null,
+      sponsorAgentId: row.sponsor_agent_id || null,
+      stakeCredits: Number(row.stake_credits || 0),
       rounds,
       votes: { byAgent },
       results: safeJsonParse(row.results_json, null),
@@ -431,6 +512,9 @@ export async function openJoustPostgresStore({ connectionString }) {
         a: row.wyr_a,
         b: row.wyr_b,
       },
+      riddleId: row.riddle_id || null,
+      sponsorAgentId: row.sponsor_agent_id || null,
+      stakeCredits: Number(row.stake_credits || 0),
       createdAt: toIso(row.created_at),
       updatedAt: toIso(row.updated_at),
       results: safeJsonParse(row.results_json, null),
@@ -480,6 +564,17 @@ export async function openJoustPostgresStore({ connectionString }) {
       WHERE id = $4
     `,
       [provider, subject, profile ? JSON.stringify(profile) : null, agentId],
+    );
+  }
+
+  async function setAgentProfile(agentId, profile) {
+    await pool.query(
+      `
+      UPDATE agents
+      SET agent_profile_json = $1::jsonb
+      WHERE id = $2
+    `,
+      [profile ? JSON.stringify(profile) : null, agentId],
     );
   }
 
@@ -568,6 +663,169 @@ export async function openJoustPostgresStore({ connectionString }) {
     return rows.map((row) => row.agent_id);
   }
 
+  async function getWallet(agentId) {
+    const row = (await pool.query(`SELECT agent_id, balance_credits, updated_at FROM wallets WHERE agent_id = $1`, [agentId])).rows[0];
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      balanceCredits: Number(row.balance_credits || 0),
+      updatedAt: toIso(row.updated_at),
+    };
+  }
+
+  async function ensureWallet(agentId, initialCredits = 1000) {
+    await pool.query(
+      `
+      INSERT INTO wallets (agent_id, balance_credits, updated_at)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (agent_id) DO NOTHING
+    `,
+      [agentId, Number(initialCredits || 0), nowIso()],
+    );
+    return getWallet(agentId);
+  }
+
+  async function creditWallet(agentId, amountCredits, txType, meta = null) {
+    const delta = Number(amountCredits || 0);
+    if (!Number.isFinite(delta) || delta === 0) return ensureWallet(agentId);
+    await ensureWallet(agentId);
+    await pool.query(`UPDATE wallets SET balance_credits = balance_credits + $1, updated_at = $2 WHERE agent_id = $3`, [delta, nowIso(), agentId]);
+    await pool.query(
+      `
+      INSERT INTO economy_transactions (id, agent_id, tx_type, amount_credits, meta_json, created_at)
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+    `,
+      [`tx_${Math.random().toString(36).slice(2, 14)}`, agentId, txType || 'credit', delta, meta ? JSON.stringify(meta) : null, nowIso()],
+    );
+    return getWallet(agentId);
+  }
+
+  async function debitWallet(agentId, amountCredits, txType, meta = null) {
+    const delta = Math.max(0, Number(amountCredits || 0));
+    const wallet = await ensureWallet(agentId);
+    if ((wallet?.balanceCredits || 0) < delta) {
+      throw new Error(`insufficient wallet balance: need ${delta}, have ${wallet?.balanceCredits || 0}`);
+    }
+    if (delta > 0) {
+      await pool.query(`UPDATE wallets SET balance_credits = balance_credits - $1, updated_at = $2 WHERE agent_id = $3`, [delta, nowIso(), agentId]);
+      await pool.query(
+        `
+        INSERT INTO economy_transactions (id, agent_id, tx_type, amount_credits, meta_json, created_at)
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+      `,
+        [`tx_${Math.random().toString(36).slice(2, 14)}`, agentId, txType || 'debit', -delta, meta ? JSON.stringify(meta) : null, nowIso()],
+      );
+    }
+    return getWallet(agentId);
+  }
+
+  async function listWalletLeaderboard(limit = 20) {
+    const { rows } = await pool.query(
+      `
+      SELECT a.id, a.display_name, COALESCE(w.balance_credits, 0) AS balance_credits
+      FROM agents a
+      LEFT JOIN wallets w ON w.agent_id = a.id
+      ORDER BY balance_credits DESC, a.infamy DESC, a.created_at DESC
+      LIMIT $1
+    `,
+      [Math.max(1, Math.min(200, Number(limit || 20)))],
+    );
+    return rows.map((row) => ({
+      agentId: row.id,
+      displayName: row.display_name,
+      balanceCredits: Number(row.balance_credits || 0),
+    }));
+  }
+
+  async function listEconomyTransactions(agentId, limit = 25) {
+    const { rows } = await pool.query(
+      `
+      SELECT * FROM economy_transactions
+      WHERE agent_id = $1
+      ORDER BY created_at DESC
+      LIMIT $2
+    `,
+      [agentId, Math.max(1, Math.min(200, Number(limit || 25)))],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      agentId: row.agent_id,
+      type: row.tx_type,
+      amountCredits: Number(row.amount_credits || 0),
+      meta: safeJsonParse(row.meta_json, null),
+      createdAt: toIso(row.created_at),
+    }));
+  }
+
+  async function createRiddle(riddle) {
+    const createdAt = riddle.createdAt || nowIso();
+    const updatedAt = riddle.updatedAt || createdAt;
+    await pool.query(
+      `
+      INSERT INTO riddles (
+        id, title, question, option_a, option_b, creator_agent_id, owner_agent_id, list_price_credits, creator_royalty_bps,
+        total_uses, total_volume_credits, owner_earnings_credits, creator_earnings_credits, is_active, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+    `,
+      [
+        riddle.id,
+        riddle.title,
+        riddle.question,
+        riddle.a,
+        riddle.b,
+        riddle.creatorAgentId,
+        riddle.ownerAgentId || riddle.creatorAgentId,
+        Number(riddle.listPriceCredits || 0),
+        Number(riddle.creatorRoyaltyBps || 1000),
+        Number(riddle.totalUses || 0),
+        Number(riddle.totalVolumeCredits || 0),
+        Number(riddle.ownerEarningsCredits || 0),
+        Number(riddle.creatorEarningsCredits || 0),
+        riddle.isActive === false ? false : true,
+        createdAt,
+        updatedAt,
+      ],
+    );
+  }
+
+  async function getRiddle(riddleId) {
+    const row = (await pool.query(`SELECT * FROM riddles WHERE id = $1`, [riddleId])).rows[0];
+    return hydrateRiddle(row);
+  }
+
+  async function listRiddles() {
+    const { rows } = await pool.query(`SELECT * FROM riddles WHERE is_active = TRUE ORDER BY total_uses DESC, created_at DESC`);
+    return rows.map((row) => hydrateRiddle(row));
+  }
+
+  async function transferRiddleOwnership(riddleId, newOwnerAgentId, nextListPriceCredits) {
+    await pool.query(
+      `
+      UPDATE riddles
+      SET owner_agent_id = $1, list_price_credits = $2, updated_at = $3
+      WHERE id = $4
+    `,
+      [newOwnerAgentId, Number(nextListPriceCredits || 0), nowIso(), riddleId],
+    );
+    return getRiddle(riddleId);
+  }
+
+  async function recordRiddleUsage(riddleId, stakeCredits, ownerPayout, creatorPayout) {
+    await pool.query(
+      `
+      UPDATE riddles
+      SET total_uses = total_uses + 1,
+          total_volume_credits = total_volume_credits + $1,
+          owner_earnings_credits = owner_earnings_credits + $2,
+          creator_earnings_credits = creator_earnings_credits + $3,
+          updated_at = $4
+      WHERE id = $5
+    `,
+      [Number(stakeCredits || 0), Number(ownerPayout || 0), Number(creatorPayout || 0), nowIso(), riddleId],
+    );
+    return getRiddle(riddleId);
+  }
+
   async function ensureDir() {
     return;
   }
@@ -591,6 +849,7 @@ export async function openJoustPostgresStore({ connectionString }) {
     listJousts,
     getAgent,
     setAgentVerification,
+    setAgentProfile,
     getTribe,
     getRoundPost,
     upsertRoundPost,
@@ -600,6 +859,17 @@ export async function openJoustPostgresStore({ connectionString }) {
     applyTribeDelta,
     applyAgentDelta,
     listTribeMemberIds,
+    getWallet,
+    ensureWallet,
+    creditWallet,
+    debitWallet,
+    listWalletLeaderboard,
+    listEconomyTransactions,
+    createRiddle,
+    getRiddle,
+    listRiddles,
+    transferRiddleOwnership,
+    recordRiddleUsage,
     close: async () => {
       await pool.end();
     },

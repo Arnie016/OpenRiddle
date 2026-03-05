@@ -1,0 +1,54 @@
+--- /Users/hema/OpenRiddle/docs/automation/auto-ops-log.md	2026-03-05 09:43:02
++++ /dev/null	2026-03-05 09:43:04
+@@ -1,37 +0,0 @@
+-# OpenRiddle Auto Ops Log
+-
+-## Run 2026-03-05T01:42:38Z
+-
+-### Timestamp
+-- 2026-03-05T01:42:38Z
+-
+-### Scenarios Tested
+-- S1: seed=1101, tribeSize=2, voterScope=arena, voteCallMode=leaders, autoStep=true, progression=round1>round2>vote>done, final=done
+-- S2: seed=1102, tribeSize=4, voterScope=arena, voteCallMode=leaders, autoStep=false, progression=round1>round2>vote>done, final=done
+-- S3: seed=1103, tribeSize=3, voterScope=arena, voteCallMode=all, autoStep=true, progression=round1>round2>vote>done, final=done
+-- S4: seed=1104, tribeSize=5, voterScope=arena, voteCallMode=all, autoStep=false, progression=round1>round2>vote>done, final=done
+-- S5: seed=1105, tribeSize=2, voterScope=all, voteCallMode=leaders, autoStep=true, progression=round1>round2>vote>done, final=done
+-- S6: seed=1106, tribeSize=6, voterScope=all, voteCallMode=leaders, autoStep=false, progression=round1>round2>vote>done, final=done
+-- S7: seed=1107, tribeSize=3, voterScope=all, voteCallMode=all, autoStep=true, progression=round1>round2>vote>done, final=done
+-- S8: seed=1108, tribeSize=5, voterScope=all, voteCallMode=all, autoStep=false, progression=round1>round2>vote>done, final=done
+-
+-### Findings
+-- No functional regressions detected in the 8-scenario simulation matrix.
+-- Environment limitation: local HTTP listeners are blocked by sandbox (`listen EPERM`), so API `/healthz` and route-level checks could not execute.
+-
+-### Files Changed
+-- /Users/hema/OpenRiddle/docs/automation/auto-ops-log.md
+-- /Users/hema/OpenRiddle/docs/automation/rollback/rollback-20260305-094238.patch
+-- /Users/hema/.codex/automations/openriddle-6h-dynamic-qa/memory.md
+-
+-### Validation Results
+-- `npm run build` passed on 2026-03-05.
+-- Simulation summary: scenarios=8; done=8; progression_errors=0; API health checks blocked by sandbox networking/listener policy.
+-
+-### Rollback Commands
+-- Restore this run's artifacts: `patch -p0 < /Users/hema/OpenRiddle/docs/automation/rollback/rollback-20260305-094238.patch`
+-- Verify rollback: `git -C /Users/hema/OpenRiddle status --short`
+-
+-### Notes
+-- Repo sync to remote was attempted but blocked (`github.com` DNS unavailable in this environment).
+-- No safe source-code fixes were required in this run.
+--- /Users/hema/.codex/automations/openriddle-6h-dynamic-qa/memory.md	2026-03-05 09:43:02
++++ /dev/null	2026-03-05 09:43:04
+@@ -1,11 +0,0 @@
+-# OpenRiddle 6h Dynamic QA Memory
+-
+-- Last run: 2026-03-05T01:42:38Z
+-- Runtime (this run): ~4m
+-- Summary:
+-  - Remote sync attempt blocked (cannot resolve github.com); local HEAD used.
+-  - Executed 8 varied offline joust simulations (seed, tribe size, voter scope, vote call mode, auto-step, round progression) via store-driven harness because sandbox blocks local server listen sockets.
+-  - All 8 scenarios reached expected progression (round1>round2>vote>done) and final state done.
+-  - Build validation passed: `npm run build`.
+-  - API health/joust HTTP flow checks remain blocked in this sandbox due listen EPERM.
+-  - No source fixes required; structured run log appended.

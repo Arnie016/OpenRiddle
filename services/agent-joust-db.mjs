@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { createRequire } from 'node:module';
+import { randomUUID } from 'node:crypto';
 
 const require = createRequire(import.meta.url);
 
@@ -55,7 +56,8 @@ export function openJoustDb(dbPath) {
       losses INTEGER NOT NULL,
       verified_provider TEXT,
       verified_subject TEXT,
-      verified_profile_json TEXT
+      verified_profile_json TEXT,
+      agent_profile_json TEXT
     );
 
     CREATE TABLE IF NOT EXISTS tribes (
@@ -94,9 +96,16 @@ export function openJoustDb(dbPath) {
       wyr_question TEXT NOT NULL,
       wyr_a TEXT NOT NULL,
       wyr_b TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'rapid',
+      response_seconds INTEGER NOT NULL DEFAULT 90,
+      riddle_id TEXT,
+      sponsor_agent_id TEXT,
+      stake_credits INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      results_json TEXT
+      results_json TEXT,
+      FOREIGN KEY (riddle_id) REFERENCES riddles(id),
+      FOREIGN KEY (sponsor_agent_id) REFERENCES agents(id)
     );
 
     CREATE TABLE IF NOT EXISTS joust_tribes (
@@ -130,6 +139,44 @@ export function openJoustDb(dbPath) {
       FOREIGN KEY (joust_id) REFERENCES jousts(id) ON DELETE CASCADE,
       FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS wallets (
+      agent_id TEXT PRIMARY KEY,
+      balance_credits INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS riddles (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      question TEXT NOT NULL,
+      option_a TEXT NOT NULL,
+      option_b TEXT NOT NULL,
+      creator_agent_id TEXT NOT NULL,
+      owner_agent_id TEXT NOT NULL,
+      list_price_credits INTEGER NOT NULL,
+      creator_royalty_bps INTEGER NOT NULL,
+      total_uses INTEGER NOT NULL DEFAULT 0,
+      total_volume_credits INTEGER NOT NULL DEFAULT 0,
+      owner_earnings_credits INTEGER NOT NULL DEFAULT 0,
+      creator_earnings_credits INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (creator_agent_id) REFERENCES agents(id),
+      FOREIGN KEY (owner_agent_id) REFERENCES agents(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS economy_transactions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      tx_type TEXT NOT NULL,
+      amount_credits INTEGER NOT NULL,
+      meta_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    );
   `);
 
   const addColumn = (sql) => {
@@ -143,6 +190,12 @@ export function openJoustDb(dbPath) {
   addColumn(`ALTER TABLE agents ADD COLUMN verified_provider TEXT;`);
   addColumn(`ALTER TABLE agents ADD COLUMN verified_subject TEXT;`);
   addColumn(`ALTER TABLE agents ADD COLUMN verified_profile_json TEXT;`);
+  addColumn(`ALTER TABLE agents ADD COLUMN agent_profile_json TEXT;`);
+  addColumn(`ALTER TABLE jousts ADD COLUMN riddle_id TEXT;`);
+  addColumn(`ALTER TABLE jousts ADD COLUMN sponsor_agent_id TEXT;`);
+  addColumn(`ALTER TABLE jousts ADD COLUMN stake_credits INTEGER NOT NULL DEFAULT 0;`);
+  addColumn(`ALTER TABLE jousts ADD COLUMN mode TEXT NOT NULL DEFAULT 'rapid';`);
+  addColumn(`ALTER TABLE jousts ADD COLUMN response_seconds INTEGER NOT NULL DEFAULT 90;`);
 
   const stmt = {
     insertAgent: db.prepare(
@@ -180,8 +233,8 @@ export function openJoustDb(dbPath) {
     deleteAgentMemberships: db.prepare(`DELETE FROM tribe_members WHERE agent_id = ?`),
 
     insertJoust: db.prepare(
-      `INSERT INTO jousts (id, title, state, wyr_question, wyr_a, wyr_b, created_at, updated_at, results_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO jousts (id, title, state, wyr_question, wyr_a, wyr_b, mode, response_seconds, riddle_id, sponsor_agent_id, stake_credits, created_at, updated_at, results_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     updateJoustState: db.prepare(`UPDATE jousts SET state = ?, updated_at = ? WHERE id = ?`),
     updateJoustResults: db.prepare(`UPDATE jousts SET results_json = ?, updated_at = ?, state = ? WHERE id = ?`),
@@ -204,6 +257,48 @@ export function openJoustDb(dbPath) {
        ON CONFLICT(joust_id, agent_id) DO UPDATE SET vote=excluded.vote, created_at=excluded.created_at`,
     ),
     listVotes: db.prepare(`SELECT agent_id, vote FROM votes WHERE joust_id = ?`),
+    updateAgentProfile: db.prepare(`UPDATE agents SET agent_profile_json = ? WHERE id = ?`),
+    getWallet: db.prepare(`SELECT agent_id, balance_credits, updated_at FROM wallets WHERE agent_id = ?`),
+    upsertWallet: db.prepare(
+      `INSERT INTO wallets (agent_id, balance_credits, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(agent_id) DO UPDATE SET balance_credits=excluded.balance_credits, updated_at=excluded.updated_at`,
+    ),
+    addWalletDelta: db.prepare(`UPDATE wallets SET balance_credits = balance_credits + ?, updated_at = ? WHERE agent_id = ?`),
+    listRichAgents: db.prepare(
+      `SELECT a.id, a.display_name, COALESCE(w.balance_credits, 0) AS balance_credits
+       FROM agents a
+       LEFT JOIN wallets w ON w.agent_id = a.id
+       ORDER BY balance_credits DESC, a.infamy DESC, a.created_at DESC`,
+    ),
+    insertRiddle: db.prepare(
+      `INSERT INTO riddles
+      (id, title, question, option_a, option_b, creator_agent_id, owner_agent_id, list_price_credits, creator_royalty_bps, total_uses, total_volume_credits, owner_earnings_credits, creator_earnings_credits, is_active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    getRiddle: db.prepare(`SELECT * FROM riddles WHERE id = ?`),
+    listRiddles: db.prepare(`SELECT * FROM riddles WHERE is_active = 1 ORDER BY total_uses DESC, created_at DESC`),
+    updateRiddleOwnership: db.prepare(
+      `UPDATE riddles
+       SET owner_agent_id = ?, list_price_credits = ?, updated_at = ?
+       WHERE id = ?`,
+    ),
+    updateRiddleUsageStats: db.prepare(
+      `UPDATE riddles
+       SET total_uses = total_uses + 1,
+           total_volume_credits = total_volume_credits + ?,
+           owner_earnings_credits = owner_earnings_credits + ?,
+           creator_earnings_credits = creator_earnings_credits + ?,
+           updated_at = ?
+       WHERE id = ?`,
+    ),
+    insertEconomyTx: db.prepare(
+      `INSERT INTO economy_transactions (id, agent_id, tx_type, amount_credits, meta_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ),
+    listEconomyTxByAgent: db.prepare(
+      `SELECT * FROM economy_transactions WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?`,
+    ),
   };
 
   function hydrateAgent(row) {
@@ -221,6 +316,7 @@ export function openJoustDb(dbPath) {
       verifiedProvider: row.verified_provider || null,
       verifiedSubject: row.verified_subject || null,
       verifiedProfile: row.verified_profile_json ? safeJsonParse(row.verified_profile_json, null) : null,
+      profile: row.agent_profile_json ? safeJsonParse(row.agent_profile_json, null) : null,
     };
   }
 
@@ -235,6 +331,28 @@ export function openJoustDb(dbPath) {
       infamy: row.infamy,
       wins: row.wins,
       losses: row.losses,
+    };
+  }
+
+  function hydrateRiddle(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      title: row.title,
+      question: row.question,
+      a: row.option_a,
+      b: row.option_b,
+      creatorAgentId: row.creator_agent_id,
+      ownerAgentId: row.owner_agent_id,
+      listPriceCredits: Number(row.list_price_credits || 0),
+      creatorRoyaltyBps: Number(row.creator_royalty_bps || 0),
+      totalUses: Number(row.total_uses || 0),
+      totalVolumeCredits: Number(row.total_volume_credits || 0),
+      ownerEarningsCredits: Number(row.owner_earnings_credits || 0),
+      creatorEarningsCredits: Number(row.creator_earnings_credits || 0),
+      isActive: Number(row.is_active || 0) === 1,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
 
@@ -296,17 +414,19 @@ export function openJoustDb(dbPath) {
   }
 
   function createAgent(agent) {
+    const createdAt = agent.createdAt || nowIso();
     stmt.insertAgent.run(
       agent.id,
       agent.displayName,
       agent.callbackUrl,
       agent.secret,
       JSON.stringify(agent.vibeTags || []),
-      agent.createdAt || nowIso(),
+      createdAt,
       agent.infamy ?? 100,
       agent.wins ?? 0,
       agent.losses ?? 0,
     );
+    stmt.upsertWallet.run(agent.id, Number(agent.startingCredits ?? 1000), createdAt);
   }
 
   function createTribe(tribe) {
@@ -333,6 +453,8 @@ export function openJoustDb(dbPath) {
   }
 
   function createJoust(j) {
+    const createdAt = j.createdAt || nowIso();
+    const updatedAt = j.updatedAt || createdAt;
     stmt.insertJoust.run(
       j.id,
       j.title,
@@ -340,8 +462,13 @@ export function openJoustDb(dbPath) {
       j.wyr.question,
       j.wyr.a,
       j.wyr.b,
-      j.createdAt || nowIso(),
-      j.updatedAt || nowIso(),
+      j.mode || 'rapid',
+      Number(j.responseSeconds || 90),
+      j.riddleId || null,
+      j.sponsorAgentId || null,
+      Number(j.stakeCredits || 0),
+      createdAt,
+      updatedAt,
       j.resultsJson || null,
     );
     for (const tribeId of j.tribeIds) stmt.insertJoustTribe.run(j.id, tribeId);
@@ -370,6 +497,11 @@ export function openJoustDb(dbPath) {
       state: row.state,
       tribeIds,
       wyr: { question: row.wyr_question, a: row.wyr_a, b: row.wyr_b },
+      mode: row.mode || 'rapid',
+      responseSeconds: Number(row.response_seconds || 90),
+      riddleId: row.riddle_id || null,
+      sponsorAgentId: row.sponsor_agent_id || null,
+      stakeCredits: Number(row.stake_credits || 0),
       rounds,
       votes: { byAgent },
       results,
@@ -384,6 +516,11 @@ export function openJoustDb(dbPath) {
       title: row.title,
       state: row.state,
       wyr: { question: row.wyr_question, a: row.wyr_a, b: row.wyr_b },
+      mode: row.mode || 'rapid',
+      responseSeconds: Number(row.response_seconds || 90),
+      riddleId: row.riddle_id || null,
+      sponsorAgentId: row.sponsor_agent_id || null,
+      stakeCredits: Number(row.stake_credits || 0),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       results: row.results_json ? safeJsonParse(row.results_json, null) : null,
@@ -410,6 +547,10 @@ export function openJoustDb(dbPath) {
     db.prepare(
       `UPDATE agents SET verified_provider = ?, verified_subject = ?, verified_profile_json = ? WHERE id = ?`,
     ).run(provider, subject, profile ? JSON.stringify(profile) : null, agentId);
+  }
+
+  function setAgentProfile(agentId, profile) {
+    stmt.updateAgentProfile.run(profile ? JSON.stringify(profile) : null, agentId);
   }
 
   function getRoundPost(joustId, tribeId, round) {
@@ -459,6 +600,117 @@ export function openJoustDb(dbPath) {
     return db.prepare(`SELECT agent_id FROM tribe_members WHERE tribe_id = ?`).all(tribeId).map((r) => r.agent_id);
   }
 
+  function getWallet(agentId) {
+    const row = stmt.getWallet.get(agentId);
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      balanceCredits: Number(row.balance_credits || 0),
+      updatedAt: row.updated_at,
+    };
+  }
+
+  function ensureWallet(agentId, initialCredits = 1000) {
+    const current = getWallet(agentId);
+    if (current) return current;
+    const updatedAt = nowIso();
+    stmt.upsertWallet.run(agentId, Number(initialCredits || 0), updatedAt);
+    return { agentId, balanceCredits: Number(initialCredits || 0), updatedAt };
+  }
+
+  function creditWallet(agentId, amountCredits, txType, meta = null) {
+    const delta = Number(amountCredits || 0);
+    if (!Number.isFinite(delta) || delta === 0) return getWallet(agentId) || ensureWallet(agentId);
+    ensureWallet(agentId);
+    stmt.addWalletDelta.run(delta, nowIso(), agentId);
+    stmt.insertEconomyTx.run(`tx_${randomUUID().slice(0, 12)}`, agentId, txType || 'credit', delta, meta ? JSON.stringify(meta) : null, nowIso());
+    return getWallet(agentId);
+  }
+
+  function debitWallet(agentId, amountCredits, txType, meta = null) {
+    const delta = Math.max(0, Number(amountCredits || 0));
+    const wallet = ensureWallet(agentId);
+    if ((wallet.balanceCredits || 0) < delta) {
+      throw new Error(`insufficient wallet balance: need ${delta}, have ${wallet.balanceCredits || 0}`);
+    }
+    if (delta > 0) {
+      stmt.addWalletDelta.run(-delta, nowIso(), agentId);
+      stmt.insertEconomyTx.run(`tx_${randomUUID().slice(0, 12)}`, agentId, txType || 'debit', -delta, meta ? JSON.stringify(meta) : null, nowIso());
+    }
+    return getWallet(agentId);
+  }
+
+  function listWalletLeaderboard(limit = 20) {
+    return stmt.listRichAgents
+      .all()
+      .slice(0, Math.max(1, Math.min(200, Number(limit || 20))))
+      .map((row) => ({
+        agentId: row.id,
+        displayName: row.display_name,
+        balanceCredits: Number(row.balance_credits || 0),
+      }));
+  }
+
+  function listEconomyTransactions(agentId, limit = 25) {
+    return stmt.listEconomyTxByAgent
+      .all(agentId, Math.max(1, Math.min(200, Number(limit || 25))))
+      .map((row) => ({
+        id: row.id,
+        agentId: row.agent_id,
+        type: row.tx_type,
+        amountCredits: Number(row.amount_credits || 0),
+        meta: row.meta_json ? safeJsonParse(row.meta_json, null) : null,
+        createdAt: row.created_at,
+      }));
+  }
+
+  function createRiddle(riddle) {
+    const createdAt = riddle.createdAt || nowIso();
+    const updatedAt = riddle.updatedAt || createdAt;
+    stmt.insertRiddle.run(
+      riddle.id,
+      riddle.title,
+      riddle.question,
+      riddle.a,
+      riddle.b,
+      riddle.creatorAgentId,
+      riddle.ownerAgentId || riddle.creatorAgentId,
+      Number(riddle.listPriceCredits || 0),
+      Number(riddle.creatorRoyaltyBps || 1000),
+      Number(riddle.totalUses || 0),
+      Number(riddle.totalVolumeCredits || 0),
+      Number(riddle.ownerEarningsCredits || 0),
+      Number(riddle.creatorEarningsCredits || 0),
+      riddle.isActive === false ? 0 : 1,
+      createdAt,
+      updatedAt,
+    );
+  }
+
+  function getRiddle(riddleId) {
+    return hydrateRiddle(stmt.getRiddle.get(riddleId));
+  }
+
+  function listRiddles() {
+    return stmt.listRiddles.all().map((row) => hydrateRiddle(row));
+  }
+
+  function transferRiddleOwnership(riddleId, newOwnerAgentId, nextListPriceCredits) {
+    stmt.updateRiddleOwnership.run(newOwnerAgentId, Number(nextListPriceCredits || 0), nowIso(), riddleId);
+    return getRiddle(riddleId);
+  }
+
+  function recordRiddleUsage(riddleId, stakeCredits, ownerPayout, creatorPayout) {
+    stmt.updateRiddleUsageStats.run(
+      Number(stakeCredits || 0),
+      Number(ownerPayout || 0),
+      Number(creatorPayout || 0),
+      nowIso(),
+      riddleId,
+    );
+    return getRiddle(riddleId);
+  }
+
   async function ensureDir() {
     await mkdir(dirname(dbPath), { recursive: true }).catch(() => {});
   }
@@ -482,6 +734,7 @@ export function openJoustDb(dbPath) {
     listJousts,
     getAgent,
     setAgentVerification,
+    setAgentProfile,
     getTribe,
     getRoundPost,
     upsertRoundPost,
@@ -491,5 +744,16 @@ export function openJoustDb(dbPath) {
     applyTribeDelta,
     applyAgentDelta,
     listTribeMemberIds,
+    getWallet,
+    ensureWallet,
+    creditWallet,
+    debitWallet,
+    listWalletLeaderboard,
+    listEconomyTransactions,
+    createRiddle,
+    getRiddle,
+    listRiddles,
+    transferRiddleOwnership,
+    recordRiddleUsage,
   };
 }
